@@ -74,6 +74,10 @@
       el('line', {x1: m.l, x2: m.l + pw, y1: yy(t), y2: yy(t), class: 'grid'}, svg);
       el('text', {x: m.l - 6, y: yy(t) + 4, 'text-anchor': 'end', class: 'tick'}, svg).textContent = y.fmt(t);
     }
+    if (y.reference != null) {
+      el('line', {x1: m.l, x2: m.l + pw, y1: yy(y.reference), y2: yy(y.reference),
+        stroke: 'var(--muted)', 'stroke-dasharray': '4 4'}, svg);
+    }
     // A run of a different experiment than the one before it starts a new line, behind a dashed marker.
     for (let k = 1; k < order.length; k++) {
       if (lineKey(runs[order[k]]) === lineKey(runs[order[k - 1]])) continue;
@@ -88,12 +92,13 @@
         el('text', {x: px, y: H - 8, 'text-anchor': 'middle', class: 'tick'}, svg).textContent = when(t);
       }
     } else {
-      const every = Math.max(1, Math.ceil(runs.length / Math.max(1, Math.floor(pw / 64))));
-      runs.forEach(function (r, i) {
-        if (i % every === 0 || i === runs.length - 1) {
-          el('text', {x: x(i), y: H - 8, 'text-anchor': 'middle', class: 'tick mono'}, svg).textContent = r.sha.slice(0, 7);
-        }
-      });
+      const labels = Math.min(runs.length, Math.max(2, Math.floor(pw / 80) + 1));
+      const indices = new Set(Array.from({length: labels}, function (_, k) {
+        return labels === 1 ? 0 : Math.round(k * (runs.length - 1) / (labels - 1));
+      }));
+      for (const i of indices) {
+        el('text', {x: x(i), y: H - 8, 'text-anchor': 'middle', class: 'tick mono'}, svg).textContent = runs[i].sha.slice(0, 7);
+      }
     }
     for (const s of series) {
       if (s.band) {

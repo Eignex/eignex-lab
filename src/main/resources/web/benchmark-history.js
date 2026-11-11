@@ -63,6 +63,55 @@
       (a.workload.workload || a.workload.caseId).localeCompare(b.workload.workload || b.workload.caseId) || a.engine.localeCompare(b.engine));
   }
 
+  /** Pivot exact-engine comparisons without sharing samples or targets between columns. */
+  function caseTable(runs, selected, columns, method = 'p05', sort = {key: 'worst', direction: 'desc'}) {
+    const comparisons = caseComparisons(runs, selected, method), rows = [];
+    for (const w of selected.benchmark?.workloads || []) {
+      const own = comparisons.filter(row => row.workload.caseId === w.caseId);
+      // Distinct metrics keep distinct rows; unlike units or directions never compete for a cell.
+      const identities = new Map();
+      for (const row of own) {
+        if (!columns.some(c => c.engine === row.engine) || !row.metric.name) continue;
+        const id = JSON.stringify([kind(row.metric), row.metric.unit, row.metric.direction]);
+        if (!identities.has(id)) identities.set(id, new Map());
+        identities.get(id).set(row.engine, row);
+      }
+      if (!identities.size) identities.set(null, new Map());
+      for (const [identity, measurements] of identities) {
+        const cells = columns.map(column => {
+          const row = measurements.get(column.engine);
+          if (row) return row;
+          const status = w.status !== 'success' ? w.status : w.engines?.[column.engine] === 'unsupported' ? 'unsupported' :
+            w.instrumented ? 'instrumented' : 'unavailable';
+          return {workload: w, engine: column.engine, current: null, target: null, ratio: null, samples: 0, status};
+        });
+        rows.push({workload: w, identity, cells});
+      }
+    }
+    return sortCases(rows, sort);
+  }
+
+  /** Sort numeric historical changes; unavailable comparisons stay last in either direction. */
+  function sortCases(rows, sort = {key: 'worst', direction: 'desc'}) {
+    const natural = new Intl.Collator('en', {numeric: true, sensitivity: 'base'});
+    const name = row => row.workload.workload || row.workload.caseId;
+    const tie = (a, b) => natural.compare(name(a), name(b)) ||
+      String(a.identity).localeCompare(String(b.identity), 'en') ||
+      a.workload.caseId.localeCompare(b.workload.caseId, 'en') || name(a).localeCompare(name(b), 'en');
+    const direction = sort.direction === 'asc' ? 1 : -1;
+    function value(row) {
+      const cells = sort.key === 'worst' ? row.cells : row.cells.filter(c => c.engine === sort.key.slice(7));
+      const ratios = cells.map(c => c.ratio).filter(Number.isFinite);
+      return ratios.length ? Math.max(...ratios) : null;
+    }
+    return [...rows].sort((a, b) => {
+      if (sort.key === 'case') return direction * tie(a, b);
+      const av = value(a), bv = value(b);
+      if (av == null || bv == null) return av == null && bv == null ? tie(a, b) : av == null ? 1 : -1;
+      return (av === bv ? 0 : av < bv ? -1 : 1) * direction || tie(a, b);
+    });
+  }
+
   /** Fixed baselines contain complete workload sets; missing rows never count as recoveries. */
   function history(runs) {
     const baselines = new Map(), points = new Map();
@@ -79,7 +128,7 @@
         const current = new Map(b.metrics.map(m => [key(m), m]));
         for (const before of base.benchmark.metrics.filter(valid)) {
           const name = engine(before);
-          if (!byEngine.has(name)) byEngine.set(name, {baseline: base, expected: new Set(), missing: new Set(), changes: []});
+          if (!byEngine.has(name)) byEngine.set(name, {baseline: base, expected: new Set(), missing: new Set(), ratios: new Map(), changes: []});
           const point = byEngine.get(name), w = workload(r, before.caseId), bw = workload(base, before.caseId);
           point.expected.add(before.caseId);
           const after = current.get(key(before));
@@ -88,6 +137,8 @@
             continue;
           }
           const ratio = slowdown(before, after);
+          if (!point.ratios.has(before.caseId)) point.ratios.set(before.caseId, []);
+          point.ratios.get(before.caseId).push(Math.log(ratio));
           if (ratio > 1 + bw.threshold) {
             // Pair confirmations belong to their recorded before/after revisions, never to an unrelated fixed baseline.
             const event = b.baselineJob === base.job && (b.transitions || []).find(t =>
@@ -106,7 +157,10 @@
         if (!ids.length) return null;
         const missing = ids.filter(id => p.missing.has(id));
         const changes = p.changes.filter(c => ids.includes(c.after.caseId));
-        return {baseline: p.baseline, coverage: ids.length, missing: missing.length,
+        // Average within a workload first so additional metrics cannot increase its weight.
+        const logs = ids.map(id => p.ratios.get(id)).filter(Boolean).map(values => values.reduce((a, b) => a + b, 0) / values.length);
+        const ratio = missing.length || logs.length !== ids.length ? null : Math.exp(logs.reduce((a, b) => a + b, 0) / ids.length);
+        return {ratio, baseline: p.baseline, coverage: ids.length, missing: missing.length,
           count: missing.length ? null : new Set(changes.map(c => c.after.caseId)).size, changes};
       },
       changes(r, theme) {
@@ -115,7 +169,7 @@
       }
     };
   }
-  const api = {engine, key, segment, selection, workload, slowdown, history, caseComparisons};
+  const api = {engine, key, segment, selection, workload, slowdown, history, caseComparisons, caseTable, sortCases};
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.BenchmarkHistory = api;
 })(typeof window === 'object' ? window : globalThis);
