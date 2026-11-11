@@ -55,6 +55,15 @@ class AwsPool(val group: String, val deployment: String, val pool: String, val m
         verify(grant, key)
         if (current.maxSize == 0) asg.update(group, minSize = 0, maxSize = maxNodes)
         val value = verify(grant, key)
+        // Nomad's scaler cannot shrink a failed launch that never registered a node. Cancel only a completely
+        // empty group's unfilled target, under fresh signed zero demand; never remove a real member here.
+        if (CapacityGrants.integer(value["desired"]) == 0L && current.desiredCapacity > 0) {
+            val latest = owned()
+            if (latest != null && latest.instances.isEmpty() && latest.desiredCapacity > 0) {
+                verify(grant, key)
+                asg.update(group, desiredCapacity = 0)
+            }
+        }
         val retired = retireStartups(value, grant, key)
         return buildJsonObject {
             put("leaseUntil", until)

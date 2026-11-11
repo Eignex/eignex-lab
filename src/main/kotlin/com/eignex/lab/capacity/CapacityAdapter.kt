@@ -98,6 +98,7 @@ object CapacityAdapter {
         put("pools", JsonArray(observations.flatMap { it.getValue("pools") as JsonArray }))
         put("instances", JsonArray(observations.flatMap { it.getValue("instances") as JsonArray }))
         put("failures", JsonObject(observations.flatMap { (it.getValue("failures") as JsonObject).entries }.associate { it.key to it.value }))
+        put("capacityErrors", JsonObject(observations.flatMap { (it["capacityErrors"] as? JsonObject).orEmpty().entries }.associate { it.key to it.value }))
     })
 
     /**

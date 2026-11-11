@@ -155,8 +155,10 @@ internal class NomadReconciler(
             }
             if (!current.paused && s.allocation == null && allocations.isEmpty()) {
                 val submission = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
-                if (placement(submission, s.budget) != submission &&
-                    store.execution.loseUnallocatedSession(s.id, "placement-cpu-capacity")) continue
+                val next = placement(submission, s.budget)
+                val reason = if (SessionPlacement.of(next).nodeClass != SessionPlacement.of(submission).nodeClass)
+                    "placement-spot-unavailable" else "placement-cpu-capacity"
+                if (next != submission && store.execution.loseUnallocatedSession(s.id, reason)) continue
             }
             val bound = allocations.firstOrNull { it.id == s.allocation }
             if ((s.allocation != null && (bound == null || !bound.active)) ||

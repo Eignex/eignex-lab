@@ -64,7 +64,7 @@ class AwsApiTest {
             when (form(body)["Action"]) {
                 "DescribeAutoScalingGroups" -> ok(group)
                 else -> ok("""<DescribeScalingActivitiesResponse><DescribeScalingActivitiesResult><Activities><member>
-                    <StatusCode>Failed</StatusCode><StatusMessage>We currently do not have sufficient capacity</StatusMessage>
+                    <StatusCode>Failed</StatusCode><StatusMessage>We currently do not have sufficient capacity</StatusMessage><StartTime>2026-11-11T16:37:15.702Z</StartTime>
                     </member></Activities></DescribeScalingActivitiesResult></DescribeScalingActivitiesResponse>""")
             }
         }
@@ -79,11 +79,30 @@ class AwsApiTest {
         val headers = http.headers.single()
         assertTrue(headers.getValue("authorization").startsWith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/eu-north-1/autoscaling/aws4_request, " +
             "SignedHeaders=content-type;host;x-amz-date, "))
-        assertEquals("We currently do not have sufficient capacity", api.latestActivity("group")!!.statusMessage)
+        val activity = api.latestActivity("group")!!
+        assertEquals("We currently do not have sufficient capacity", activity.statusMessage)
+        assertEquals(Instant.parse("2026-11-11T16:37:15.702Z").toEpochMilli(), activity.startedAt)
         assertEquals(mapOf("Action" to "DescribeScalingActivities", "Version" to "2011-01-01", "AutoScalingGroupName" to "group", "MaxRecords" to "1"),
             form(http.requests.last().third))
         http.answer = { _, _, _ -> ok("<DescribeAutoScalingGroupsResponse><DescribeAutoScalingGroupsResult><AutoScalingGroups/></DescribeAutoScalingGroupsResult></DescribeAutoScalingGroupsResponse>") }
         assertNull(api.group("group"))
+    }
+
+    @Test fun `fleet inventory batches fifty group names per provider request`() {
+        val member = group.substringAfter("<AutoScalingGroups>").substringBefore("</AutoScalingGroups>")
+        val http = RecordingHttp { _, _, body ->
+            val names = form(body).filterKeys { it.startsWith("AutoScalingGroupNames.member.") }.values
+            ok("<DescribeAutoScalingGroupsResponse><DescribeAutoScalingGroupsResult><AutoScalingGroups>" +
+                names.joinToString("") { member.replace("<AutoScalingGroupName>group</AutoScalingGroupName>", "<AutoScalingGroupName>$it</AutoScalingGroupName>") } +
+                "</AutoScalingGroups></DescribeAutoScalingGroupsResult></DescribeAutoScalingGroupsResponse>")
+        }
+        val api = AwsCapacityApi(AwsApi("eu-north-1", { example }, clock, http))
+        val names = (1..20).map { "group-$it" }
+        assertEquals(names.toSet(), api.groups(names).keys)
+        assertEquals(1, http.requests.size)
+        assertEquals(20, form(http.requests.single().third).keys.count { it.startsWith("AutoScalingGroupNames.member.") })
+        assertEquals(51, api.groups((1..51).map { "group-$it" }).size)
+        assertEquals(3, http.requests.size)
     }
 
     @Test fun `group changes send exactly the asked fields`() {

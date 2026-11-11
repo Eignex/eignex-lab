@@ -311,7 +311,7 @@ the maintenance runner retains capture analysis, reference checking, schedules a
 
 `capacity.example.json` defines homogeneous capability pools, purchasing market, explicit host memory reserves, finite
 node/vCPU limits, sustained backlog, cooldown and idle retirement. Cloud profiles use Spot unless their tags explicitly request
-on-demand; measurements/builds do not reserve a whole node.
+on-demand, or an equivalent configured on-demand fallback handles a Spot shortage; measurements/builds do not reserve a whole node.
 Every session budget includes its helpers. The policy packs free CPU and memory on ready nodes, accounts for booting
 nodes, preserves per-experiment/per-host parallel caps, and reuses warm capacity for lower-priority eligible work.
 Only old empty nodes contribute to voluntary scale-in: empty for a pool's `idleMs` (default 300000), or for its optional
@@ -350,8 +350,37 @@ On the operator API, `/capacity/view` shows every allocation/experiment, its bud
 unreserved CPU/memory and capacity failures. `lab capacity` shows its JSON; `lab execution ID` shows session/allocation
 identities, phases and generations. Set `LAB_NOMAD_CAPACITY_SETTINGS` on the ordinary API to the same settings file,
 then use `lab capacity request POOL NODES [TTL_SECONDS]`, `lab capacity leases`, or `lab capacity release LEASE_ID`.
-Requests persist, remain within pool/vCPU limits and expire within one hour; they cannot change a pool's market.
+Requests persist, remain within pool/vCPU limits and expire within one hour. During a Spot shortage an equivalent
+configured on-demand fallback supplies the requested minimum; the original request and its expiry stay unchanged.
 Worker credentials cannot create these requests. Existing wait/fetch/retry/cancel and accepted output paths remain.
+
+### Unavailable Spot capacity
+
+Set a Spot pool's `onDemandFallback` to a separate on-demand pool with the same vCPUs, memory/reserve and hardware tags,
+at least its node limit, and an equivalent queue target (only node class and purchasing market differ). The AWS adapter
+publishes the actual failed scaling activity's timestamp and `UnfulfillableCapacity` code. Fresh reports activate fallback
+for ten minutes from that failure, then new admissions try Spot again. Quota, authentication, bootstrap and other errors
+do not trigger more expensive purchasing. Already running workers finish on their current nodes, and explicit `spot` or
+`!on-demand` selectors remain binding. Ready Spot capacity is reused before buying fallback capacity.
+
+The coordinator fences and replaces only unallocated sessions, retaining source commits, prepared inputs, budgets and
+accepted paired rows. Replacement submissions record `lab_spot_fallback_from` and `lab_spot_fallback_reason`; execution
+logs record `placement-spot-unavailable`, and `/capacity` and Nodes report active `spotFallbacks` and actual pool markets.
+Fallback pools use normal idle retirement, leases and the same global vCPU limit. Empty AWS groups with a fresh signed
+zero target cancel their unfulfilled launch requests through renewal, avoiding the Autoscaler's need to drain a node
+that never registered. Groups with real instances still use the normal empty-node drain policy.
+
+Provision the on-demand counterparts before enabling the mapping. `deploy/nomad/spot-fallback-settings.sh CAPACITY QUEUE
+AWS_ADAPTER AUTOSCALER FLEET_OUTPUT OUTPUT` stages all four private settings files from `tofu output -json pools` of a
+fallback fleet; review them before installation. Deploy the updated renewal functions, coordinator and AWS adapter,
+then install the settings and render the Autoscaler policies with `autoscaler.sh`. Keep pinned worker runtimes unchanged.
+The old Python inventory adapter does not publish the structured shortage signal and must be migrated to the maintained
+`eignex-lab capacity-adapter aws CONFIG` service. Verify a bounded manual request reaches an on-demand node after an
+injected shortage in an isolated inventory, then restore the real inventory, release the lease and verify idle retirement.
+The maintained adapter batches group inventory, omits scaling-activity queries for idle groups, and skips Lambda renewal
+only when a fresh, verified zero-demand grant and fresh provider inventory both show no instances or pending launches.
+Dormant fallback pools therefore do not multiply Auto Scaling calls or keep their capacity leases open. Active pools and
+unfilled launch targets still renew independently; a cached shortage retains its original timestamp across adapter restarts.
 
 Provider-side capacity expiry, private-network bootstrap and real AWS/GCP Spot canaries follow in the infrastructure
 stack. The collector/packing tests alone do not establish live provisioning, quota handling or billing expiry.

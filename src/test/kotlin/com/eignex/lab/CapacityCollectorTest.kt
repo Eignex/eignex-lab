@@ -22,6 +22,34 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class CapacityCollectorTest {
+    @Test fun `manual Spot requests fall back on a fresh capacity shortage and retain expiry and shared limits`() {
+        val spot = pool.copy(onDemandFallback = "on-demand")
+        val fallback = pool.copy(id = "on-demand", nodeClass = "on-demand", market = CapacityMarket.ON_DEMAND)
+        val settings = CapacitySettings(listOf(spot, fallback), 16)
+        val lease = store.capacityLeases.request(pool.id, 1, 60000, at)
+        fun inventory(errorAt: Long) = Files.writeString(inventory, Json.encodeToString(CapacityInventory(at,
+            settings.pools.map { it.id }.toSet(), emptyList(), capacityErrors = mapOf(pool.id to CapacityError("UnfulfillableCapacity", errorAt)))))
+        inventory(at)
+        val collector = CapacityCollector(settings, listOf(inventory), tokenFile, state, store, control, { true }, setOf("local"), { at }, { nanos })
+        collector.collect()
+        assertEquals(mapOf(pool.id to fallback.id), collector.snapshot().spotFallbacks)
+        assertEquals(0, collector.snapshot().decision.desired[pool.id])
+        assertEquals(1, collector.snapshot().decision.desired[fallback.id])
+        assertEquals(lease, store.capacityLeases.active(at).single(), "fallback never rewrites the operator's request")
+        control.full = buildJsonObject {
+            put("ID", "ready-spot"); put("NodeClass", pool.nodeClass); put("Status", "ready"); put("ModifyIndex", 1)
+            putJsonObject("Meta") { put(CapacityWire.CAPACITY_ID_META, "i-spot") }
+        }
+        Files.writeString(inventory, Json.encodeToString(CapacityInventory(at, settings.pools.map { it.id }.toSet(), listOf(CapacityInstance("i-spot", pool.id)),
+            capacityErrors = mapOf(pool.id to CapacityError("UnfulfillableCapacity", at)))))
+        collector.collect()
+        assertEquals(1, collector.snapshot().decision.desired[pool.id])
+        assertEquals(0, collector.snapshot().decision.desired[fallback.id], "ready Spot nodes already satisfy the manual minimum")
+        control.full = null
+        at += 61000; inventory(at); collector.collect()
+        assertTrue(collector.snapshot().decision.desired.values.all { it == 0 }, "expired requests cannot retain paid capacity")
+    }
+
     private val root = Files.createTempDirectory("capacity-collector")
     private val store = Store(root.resolve("lab.db"))
     private val token = "capacity-secret-".repeat(4)

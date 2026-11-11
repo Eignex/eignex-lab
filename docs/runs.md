@@ -159,7 +159,9 @@ control; an instrumented capture establishes adapter consumption, not throughput
 **Auto placement is preferred and is the default for ordinary experiments, profiles and bench-adapter runs.**
 Omit `tags`, or use `"tags": []`; the lab chooses placement automatically. Idle local capacity
 can contribute, and the lab adds cloud capacity as demand grows. Local and cloud workers can share the same job.
-Hardware or market selectors can narrow the compatible workers when a measurement needs them.
+Hardware or market selectors can narrow the compatible workers when a measurement needs them. Automatic cloud placement
+prefers Spot; a configured equivalent on-demand pool handles `UnfulfillableCapacity` shortages. Explicit `spot` or
+`!on-demand` tags disable that fallback, while `on-demand` or `!spot` requests on-demand directly.
 
 Priority controls native admission and iteration claims; sweeps and reference runs win equal-priority ties.
 Locally eligible jobs below a cloud pool's growth priority may reuse compatible existing cloud capacity;
