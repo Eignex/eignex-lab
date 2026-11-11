@@ -193,6 +193,32 @@ function threeEngines(job, simd, accelerate, portable) {
   return r;
 }
 
+test('a single run shows current timings without historical targets or slowdowns', () => {
+  for (const finished of [true, false]) {
+    const selected = threeEngines(1, 10, 100, 1000);
+    selected.finished = finished;
+
+    const dot = H.caseTable([selected], selected, columns).find(row => row.workload.caseId === 'dot');
+
+    assert.deepEqual(dot.cells.map(cell => cell.current), [10, 100, 1000]);
+    assert.ok(dot.cells.every(cell => cell.status === 'measured' && cell.target === null &&
+      cell.ratio === null && cell.samples === 0));
+  }
+});
+
+test('a single default engine capture is visible in its own column', () => {
+  const selected = run(1);
+  selected.benchmark.metrics = selected.benchmark.metrics.filter(m => m.engine === 'jvm-scalar')
+    .map(m => ({...m, name: 'median_ns', engine: 'jvm-default'}));
+
+  const rows = H.caseTable([selected], selected, [...columns, {engine: 'jvm-default'}]);
+
+  assert.deepEqual(rows.map(row => row.cells[3].current), [10, 1000000]);
+  assert.ok(rows.every(row => row.cells[3].status === 'measured' && row.cells[3].target === null &&
+    row.cells[3].ratio === null && row.cells[3].samples === 0));
+  assert.ok(rows.every(row => row.cells.slice(0, 3).every(cell => cell.current === null)));
+});
+
 test('three engine columns each use their own earlier history and preserve distinct slowdowns', () => {
   const runs = [threeEngines(1, 10, 100, 1000), threeEngines(2, 20, 200, 2000),
     threeEngines(3, 30, 50, 1300), threeEngines(4, 1, 1, 1)];

@@ -135,6 +135,9 @@
     const columns = table.dataset.koblas === 'true' ? [
       {engine: 'jvm-simd', label: 'JVM SIMD'}, {engine: 'accelerate-jvm', label: 'Accelerate'}, {engine: 'jvm-scalar', label: 'Portable'}
     ] : engines.map(engine => ({engine, label: name(engine)}));
+    for (const engine of selectedEngines) {
+      if (!columns.some(column => column.engine === engine)) columns.push({engine, label: name(engine)});
+    }
     const sortLabel = tableSort.key === 'case' ? 'case name' : tableSort.key === 'worst' ? 'worst slowdown across engines' :
       (columns.find(c => 'engine:' + c.engine === tableSort.key)?.label || 'engine') + ' change against its own history';
     tableContext.append(document.createTextNode(' Sorted by ' + sortLabel + ', ' +
@@ -162,7 +165,7 @@
     });
     const missing = columns.filter(c => !selectedEngines.has(c.engine));
     document.getElementById('benchmark-table-coverage').textContent = missing.length ?
-      'No exact-engine capture in this run for ' + missing.map(c => c.label).join(', ') + '. Default-engine measurements are not substituted.' : '';
+      'No measurements in this run for ' + missing.map(c => c.label).join(', ') + '.' : '';
     const body = document.getElementById('benchmark-case-rows'); body.replaceChildren();
     const statusLabels = {measured: 'Measured', failed: 'Capture failed', pending: 'Pending', skipped: 'Skipped',
       unsupported: 'Unsupported', instrumented: 'Instrumented', unavailable: 'Not measured'};

@@ -40,7 +40,7 @@ internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html 
     append(Html("""
 <section id="benchmark-cases-section" aria-labelledby="benchmark-cases-heading">
 <h2 id="benchmark-cases-heading">Case timings</h2>
-<p class="chart-description">One row per case. Each engine is compared independently with its own earlier measurements: current timing, historical target, slowdown and prior-run count. These targets differ from the charts’ fixed baseline.</p>
+<p class="chart-description">One row per case. Timings appear from the first run. Historical targets and slowdowns appear once earlier comparable measurements exist for that engine. These targets differ from the charts’ fixed baseline.</p>
 <div class="tools" role="group" aria-label="Historical timing target"><span class="muted small">Target</span><button type="button" class="chip on" aria-pressed="true" data-benchmark-target="p05">Fast historical percentile</button><button type="button" class="chip" aria-pressed="false" data-benchmark-target="best">Best observed</button></div>
 <p id="benchmark-target-description" class="muted small"></p>
 <p id="benchmark-table-context" class="muted small"></p>
