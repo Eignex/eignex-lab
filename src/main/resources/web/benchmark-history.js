@@ -79,7 +79,7 @@
         const current = new Map(b.metrics.map(m => [key(m), m]));
         for (const before of base.benchmark.metrics.filter(valid)) {
           const name = engine(before);
-          if (!byEngine.has(name)) byEngine.set(name, {baseline: base, expected: new Set(), missing: new Set(), changes: []});
+          if (!byEngine.has(name)) byEngine.set(name, {baseline: base, expected: new Set(), missing: new Set(), ratios: new Map(), changes: []});
           const point = byEngine.get(name), w = workload(r, before.caseId), bw = workload(base, before.caseId);
           point.expected.add(before.caseId);
           const after = current.get(key(before));
@@ -88,6 +88,8 @@
             continue;
           }
           const ratio = slowdown(before, after);
+          if (!point.ratios.has(before.caseId)) point.ratios.set(before.caseId, []);
+          point.ratios.get(before.caseId).push(Math.log(ratio));
           if (ratio > 1 + bw.threshold) {
             // Pair confirmations belong to their recorded before/after revisions, never to an unrelated fixed baseline.
             const event = b.baselineJob === base.job && (b.transitions || []).find(t =>
@@ -106,7 +108,10 @@
         if (!ids.length) return null;
         const missing = ids.filter(id => p.missing.has(id));
         const changes = p.changes.filter(c => ids.includes(c.after.caseId));
-        return {baseline: p.baseline, coverage: ids.length, missing: missing.length,
+        // Average within a workload first so additional metrics cannot increase its weight.
+        const logs = ids.map(id => p.ratios.get(id)).filter(Boolean).map(values => values.reduce((a, b) => a + b, 0) / values.length);
+        const ratio = missing.length || logs.length !== ids.length ? null : Math.exp(logs.reduce((a, b) => a + b, 0) / ids.length);
+        return {ratio, baseline: p.baseline, coverage: ids.length, missing: missing.length,
           count: missing.length ? null : new Set(changes.map(c => c.after.caseId)).size, changes};
       },
       changes(r, theme) {

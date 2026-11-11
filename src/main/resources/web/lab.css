@@ -1645,24 +1645,17 @@ summary { cursor: pointer; }
 .result-diagnostics { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 24px 0; }
 .result-diagnostics .scroll { max-height: 400px; overflow: auto; }
 
-#benchmark-metric { max-width: 100%; }
-#benchmark-engines span { white-space: normal; }
-#benchmark-affected { display: grid; gap: 6px; margin-top: 12px; }
-.benchmark-change { text-align: left; overflow-wrap: anywhere; white-space: normal; }
-#benchmark-detail { scroll-margin-top: 16px; }
-
-#benchmark-affected details .benchmark-change { display: block; width: 100%; margin-top: 6px; }
-#benchmark-detail .legend span { white-space: normal; }
-
-#benchmark-timing-engines { margin-top: 12px; }
-#benchmark-engines span, #benchmark-timing-engines span { display: inline-flex; align-items: center; gap: 6px; }
-.benchmark-speeds { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; margin-top: 16px; }
-.benchmark-speeds span { display: block; color: var(--muted); font-size: 12px; }
-.benchmark-speeds strong { display: block; font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#benchmark-engines span { display: inline-flex; align-items: center; gap: 6px; white-space: normal; }
 
 .benchmark-cases { min-width: 840px; width: 100%; }
 .benchmark-cases td, .benchmark-cases th { padding: 8px 12px; }
 .benchmark-cases td:first-child { min-width: 230px; max-width: 440px; overflow-wrap: anywhere; }
 .benchmark-cases td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .benchmark-cases small { display: block; color: var(--muted); margin-top: 4px; }
-.benchmark-cases button.benchmark-case-link { display: inline; min-height: 0; border: 0; background: none; color: var(--link); padding: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+
+.benchmark-overview .chart-description { min-height: 58px; }
+.benchmark-chart-summary { display: grid; gap: 4px; margin: 8px 6px; font-size: 11px; }
+.benchmark-chart-summary>div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; }
+.benchmark-chart-summary strong { font-weight: 500; font-variant-numeric: tabular-nums; }
+.benchmark-context { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; }
+.benchmark-context p { margin: 0; }

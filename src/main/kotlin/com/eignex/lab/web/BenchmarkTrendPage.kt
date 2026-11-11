@@ -2,37 +2,45 @@ package com.eignex.lab.web
 
 import com.eignex.lab.analysis.*
 
-/** Benchmark history displays workload and theme timings, with failures marked on their charts. */
+/** Benchmark history shows overall and theme performance, with absolute timings in the case table. */
 internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html = buildHtml {
-    append(Html("<div class=\"trend-toolbar\"><h2>Benchmark performance</h2><div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">X-axis</span><button type=\"button\" class=\"chip on\" aria-pressed=\"true\" data-x=\"commit\">Commit</button><button type=\"button\" class=\"chip\" aria-pressed=\"false\" data-x=\"date\">Date</button></div></div>"))
     append(Html("""
+<div class="trend-toolbar">
+<nav class="queue-sections" aria-label="Benchmark sections"><a href="#benchmark-performance">Performance</a><a href="#benchmark-themes-section">Themes</a><a href="#benchmark-cases-section">Case timings</a></nav>
+<div class="tools" role="group" aria-label="x-axis"><span class="muted">X-axis</span><button type="button" class="chip on" aria-pressed="true" data-x="commit">Commit</button><button type="button" class="chip" aria-pressed="false" data-x="date">Date</button></div>
+</div>
+<div id="benchmark-engines" class="legend"></div>
+<div id="benchmark-performance" class="trend-charts benchmark-overview">
 <section class="chart-panel" aria-labelledby="benchmark-regressions-heading">
 <h2 id="benchmark-regressions-heading">Regressed workloads by engine</h2>
-<p class="chart-description">Each workload is compared with its own timing in the first complete run of the same measurement series. Lines count workloads beyond their slowdown threshold; more is worse. Gaps mean measurements are incomplete or controls are unavailable. Changing cases or controls starts a new baseline.</p>
-<label>Commit <select id="benchmark-run" aria-label="Selected benchmark commit"></select></label>
-<div id="benchmark-engines" class="legend"></div>
-<p class="muted small">Rings mark failed captures. A ring at the baseline means timing is unavailable, not zero regressions.</p>
+<p class="chart-description">Workloads beyond their own slowdown threshold since the first complete comparable run. Fewer is better. Counts are candidates; paired confirmations compare neighboring revisions.</p>
 <div class="chart" id="chart-benchmark-regressions"></div>
-<p id="benchmark-baseline" class="muted small"></p>
-<div id="benchmark-affected" aria-live="polite"></div>
+<div id="benchmark-regression-summary" class="benchmark-chart-summary"></div>
 </section>
-<section class="chart-panel" id="benchmark-detail" aria-labelledby="benchmark-timing-heading">
-<h2 id="benchmark-timing-heading">Absolute workload timing</h2>
-<p class="chart-description">Compare engines on the same operation, size and storage. Timings stay in their original unit; no workloads are averaged. Hover for absolute values, relative speed and the measured provider and kernel.</p>
-<label>Workload <select id="benchmark-metric" aria-label="Benchmark workload metric"></select></label>
-<div id="benchmark-timing-engines" class="legend"></div>
-<div class="chart" id="chart-benchmark-metric"></div>
-<div id="benchmark-selected" class="benchmark-speeds"></div>
+<section class="chart-panel" aria-labelledby="benchmark-performance-heading">
+<h2 id="benchmark-performance-heading">Performance vs baseline</h2>
+<p class="chart-description">Geometric mean of each workload’s slowdown against its own baseline, equally weighted. 1× is unchanged; lower is faster. Absolute timings are in the table below.</p>
+<div class="chart" id="chart-benchmark-performance"></div>
+<div id="benchmark-performance-summary" class="benchmark-chart-summary"></div>
 </section>
+</div>
+<div class="benchmark-context"><p id="benchmark-baseline" class="muted small" aria-live="polite"></p><button type="button" class="chip" id="benchmark-latest">Latest complete run</button></div>
+<p class="muted small">Click any chart to inspect a commit. Gaps mean incomplete or incomparable measurements; rings mark failed captures, never zero regressions. Changed cases or controls start a new baseline.</p>
 """))
     if (runs.any { run -> run.benchmark?.workloads?.any { it.theme != null } == true }) {
-        append(Html("<section aria-labelledby=\"benchmark-themes-heading\"><h2 id=\"benchmark-themes-heading\">Regressions by theme</h2><p class=\"chart-description\">Workloads beyond their own baseline threshold, separated by exact engine. Unsupported engines are excluded from coverage; missing or failed measurements leave gaps.</p><div class=\"multiples\" id=\"benchmark-themes\"></div></section>"))
+        append(Html("""
+<section id="benchmark-themes-section" aria-labelledby="benchmark-themes-heading">
+<h2 id="benchmark-themes-heading">Performance by theme</h2>
+<p class="chart-description">The same baseline-relative performance and scale in every theme, with regression counts at the inspected commit. Each engine is compared with its own baseline.</p>
+<div class="multiples" id="benchmark-themes"></div>
+</section>
+"""))
     }
     append(Html("""
-<section aria-labelledby="benchmark-cases-heading">
+<section id="benchmark-cases-section" aria-labelledby="benchmark-cases-heading">
 <h2 id="benchmark-cases-heading">Case timings</h2>
-<p class="chart-description">Every case and engine at the selected commit, compared with its own earlier measurements in the shown history. Targets require matching cases, units and measurement controls. Click a case to open its timing graph.</p>
-<label>Target <select id="benchmark-target" aria-label="Historical timing target"><option value="p05">Fast historical percentile</option><option value="best">Best observed</option></select></label>
+<p class="chart-description">Every case and engine at the inspected commit, compared with its own earlier measurements. These historical targets differ from the charts’ fixed baseline.</p>
+<div class="tools" role="group" aria-label="Historical timing target"><span class="muted small">Target</span><button type="button" class="chip on" aria-pressed="true" data-benchmark-target="p05">Fast historical percentile</button><button type="button" class="chip" aria-pressed="false" data-benchmark-target="best">Best observed</button></div>
 <p id="benchmark-target-description" class="muted small"></p>
 <p id="benchmark-table-context" class="muted small"></p>
 <div class="scroll" role="region" aria-label="Case timing comparisons" tabindex="0">

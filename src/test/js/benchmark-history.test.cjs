@@ -39,6 +39,7 @@ test('missing failed pending and unknown controls leave gaps rather than recover
     else after.benchmark.workloads[1].status = change;
     const history = H.history([before, after]);
     assert.equal(history.point(after, 'jvm-simd').count, null, change);
+    assert.equal(history.point(after, 'jvm-simd').ratio, null, change);
     if (change === 'missing') assert.equal(history.point(after, 'jvm-scalar').count, 0);
   }
   const unqualified = run(1);
@@ -155,4 +156,30 @@ test('twenty historical run medians remove the limited history label', () => {
   assert.equal(dot.samples, 20);
   assert.equal(dot.limited, false);
   assert.ok(Math.abs(dot.target - 1.95) < 1e-12);
+});
+
+
+test('relative performance weights workloads equally regardless of timing unit or number of metrics', () => {
+  const before = run(1), after = run(2, [[20, 500000], [10, 1000000]]);
+  // One workload doubles and one halves; the geometric mean is unchanged.
+  // A second metric for dot must not give it twice the weight of gemm.
+  for (const r of [before, after]) {
+    r.benchmark.metrics.push({...r.benchmark.metrics[0], name: 'extra/jvm-scalar'});
+  }
+  const history = H.history([before, after]);
+
+  assert.equal(history.point(after, 'jvm-scalar').ratio, 1);
+  assert.equal(history.point(after, 'jvm-scalar', 'dot').ratio, 2);
+  assert.equal(history.point(after, 'jvm-scalar', 'gemm').ratio, .5);
+  assert.equal(history.point(after, 'jvm-scalar').count, 1);
+});
+
+test('relative performance reverses throughput and resets at a new baseline', () => {
+  const before = run(1), after = run(2, [[20, 2000000], [10, 1000000]]);
+  for (const r of [before, after]) for (const m of r.benchmark.metrics) m.direction = 'higher';
+  const next = run(3, [[100, 2000000], [10, 1000000]], {spec: 'new'});
+  const history = H.history([before, after, next]);
+
+  assert.equal(history.point(after, 'jvm-scalar').ratio, .5);
+  assert.equal(history.point(next, 'jvm-scalar').ratio, 1);
 });

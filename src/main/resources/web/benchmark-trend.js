@@ -1,178 +1,122 @@
 (function () {
   'use strict';
-  let selectedJob = null, selectedMetric = null, targetMethod = 'p05', listener = false;
+  let selectedJob = null, targetMethod = 'p05', listener = false;
   const labels = {'jvm-scalar': 'Portable JVM', 'jvm-simd': 'JVM SIMD', native: 'Native portable',
     'native-default': 'Native default', 'jvm-default': 'JVM default'};
   const priority = ['jvm-default', 'jvm-scalar', 'jvm-simd', 'native', 'native-default'];
   const format = value => Number(value.toPrecision(5)).toLocaleString();
   const name = value => labels[value] || value;
   const signed = value => (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
+  const relative = value => value.toFixed(2) + '×';
   window.renderBenchmarkTrend = function (context) {
     const {all, runs, draw, niceMax, when} = context, H = window.BenchmarkHistory;
-    const history = H.history(runs), metrics = new Map(), names = new Set();
-    for (const r of runs) for (const m of r.benchmark?.metrics || []) {
-      metrics.set(H.selection(r, m), {r, m}); names.add(H.engine(m));
-    }
+    const history = H.history(runs), names = new Set();
+    for (const r of runs) for (const m of r.benchmark?.metrics || []) names.add(H.engine(m));
     const engines = [...names].sort((a, b) => {
       const rank = v => priority.includes(v) ? priority.indexOf(v) : priority.length;
       return rank(a) - rank(b) || a.localeCompare(b);
     });
     const colors = new Map(engines.map((e, i) => [e, 'var(--series-' + (i % 5 + 1) + ')']));
     const dashes = ['', '6 3', '2 3', '8 3 2 3', '3 2'];
-    const select = document.getElementById('benchmark-metric');
     const latest = [...runs].reverse().find(r => r.finished && r.benchmark) || runs[runs.length - 1];
-    let selected = runs.find(r => r.job === selectedJob) || latest;
+    const selected = runs.find(r => r.job === selectedJob) || latest;
     if (!selected) return;
     selectedJob = selected.job;
-    const commitSelect = document.getElementById('benchmark-run');
-    const targetSelect = document.getElementById('benchmark-target');
-    targetSelect.value = targetMethod;
-    commitSelect.replaceChildren();
-    for (const r of runs) {
-      const option = document.createElement('option'); option.value = String(r.job);
-      option.textContent = r.sha.slice(0, 9) + ' · #' + r.job + (r.finished ? '' : ' · running');
-      commitSelect.append(option);
-    }
-    commitSelect.value = String(selectedJob);
     const render = () => window.renderBenchmarkTrend(context);
+    const choose = r => {selectedJob = r.job; render();};
+    const targetButtons = document.querySelectorAll('[data-benchmark-target]');
+    targetButtons.forEach(button => {
+      const on = button.dataset.benchmarkTarget === targetMethod;
+      button.classList.toggle('on', on); button.setAttribute('aria-pressed', String(on));
+    });
+    document.getElementById('benchmark-latest').disabled = selectedJob === latest.job;
     if (!listener) {
-      commitSelect.addEventListener('change', () => {selectedJob = Number(commitSelect.value); render();});
-      select.addEventListener('change', () => {selectedMetric = select.value; render();});
-      targetSelect.addEventListener('change', () => {targetMethod = targetSelect.value; render();});
+      document.getElementById('benchmark-latest').addEventListener('click', () => choose(latest));
+      targetButtons.forEach(button => button.addEventListener('click', () => {
+        targetMethod = button.dataset.benchmarkTarget; render();
+      }));
       listener = true;
     }
-    select.replaceChildren();
-    for (const [key, {r, m}] of metrics) {
-      const option = document.createElement('option'); option.value = key;
-      option.textContent = (H.workload(r, m.caseId)?.workload || m.caseId) + ' · ' + m.unit +
-        (JSON.parse(key)[1] === 'median_ns' ? '' : ' · ' + JSON.parse(key)[1]);
-      select.append(option);
+    const legend = document.getElementById('benchmark-engines'); legend.replaceChildren();
+    engines.forEach((e, i) => {
+      const span = document.createElement('span');
+      const swatch = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      swatch.setAttribute('width', '24'); swatch.setAttribute('height', '12'); swatch.setAttribute('aria-hidden', 'true');
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      for (const [k, v] of Object.entries({x1: 0, x2: 24, y1: 6, y2: 6, stroke: colors.get(e), 'stroke-width': 2,
+        'stroke-dasharray': dashes[i % dashes.length]})) line.setAttribute(k, v);
+      swatch.append(line); span.append(swatch, document.createTextNode(name(e))); span.title = e; legend.append(span);
+    });
+    function summary(host, values) {
+      host.replaceChildren();
+      for (const {engine, text} of values) {
+        const row = document.createElement('div'), label = document.createElement('span'), value = document.createElement('strong');
+        label.textContent = name(engine); label.style.color = colors.get(engine); value.textContent = text;
+        row.append(label, value); host.append(row);
+      }
     }
-    if (!metrics.has(selectedMetric)) {
-      const first = history.changes(selected)[0];
-      selectedMetric = first ? H.selection(selected, first.after) : metrics.keys().next().value;
-    }
-    if (selectedMetric) select.value = selectedMetric;
-    for (const id of ['benchmark-engines', 'benchmark-timing-engines']) {
-      const legend = document.getElementById(id); legend.replaceChildren();
-      engines.forEach((e, i) => {
-        const span = document.createElement('span');
-        const swatch = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        swatch.setAttribute('width', '24'); swatch.setAttribute('height', '12'); swatch.setAttribute('aria-hidden', 'true');
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        for (const [k, v] of Object.entries({x1: 0, x2: 24, y1: 6, y2: 6, stroke: colors.get(e), 'stroke-width': 2,
-          'stroke-dasharray': dashes[i % dashes.length]})) line.setAttribute(k, v);
-        swatch.append(line); span.append(swatch, document.createTextNode(name(e))); span.title = e; legend.append(span);
-      });
-    }
-    function choose(r, theme) {
-      selectedJob = r.job;
-      const change = history.changes(r, theme)[0];
-      if (change) selectedMetric = H.selection(r, change.after);
-      render();
-      document.getElementById('benchmark-affected').scrollIntoView({block: 'nearest', behavior: 'auto'});
+    function pointText(p, performance) {
+      if (!p) return 'No comparable baseline';
+      if (p.count == null) return p.missing + '/' + p.coverage + ' unavailable';
+      return (performance ? relative(p.ratio) + ' · ' : '') + p.count + '/' + p.coverage + ' regressed';
     }
     function regressionRows(r, theme) {
       const rows = [['commit', r.sha.slice(0, 9)], ['when', when(r.at)], ['job', '#' + r.job]];
       if (theme) rows.push(['theme', theme]);
       engines.forEach(e => {
         const p = history.point(r, e, theme);
-        rows.push([name(e), !p ? 'no comparable baseline' : p.count == null ?
-          'incomplete · ' + p.missing + ' of ' + p.coverage + ' unavailable' :
-          p.count + ' regressed / ' + p.coverage + ' measured · baseline #' + p.baseline.job]);
+        rows.push([name(e), pointText(p, true) + (p ? ' · baseline #' + p.baseline.job : '')]);
       });
       if (r.benchmark.failed) rows.push(['failed captures', r.benchmark.failed + ' · engine may be unknown']);
       rows.push(['paired vs previous', (r.benchmark.transitions || []).filter(t => t.confirmation === 'confirmed').length + ' confirmed changes']);
       return rows;
     }
-    function regressions(host, theme, height) {
-      const series = engines.map((e, i) => ({name: name(e), color: colors.get(e), dash: dashes[i % dashes.length],
-        value: r => history.point(r, e, theme)?.count}));
-      const values = runs.flatMap(r => engines.map(e => history.point(r, e, theme)?.count)).filter(v => v != null);
-      const top = Math.max(1, Math.ceil(niceMax(Math.max(0, ...values))));
-      const ticks = [...new Set([0, Math.round(top / 2), top])];
-      draw(host, series, {max: top, ticks, fmt: String}, {height, endLabels: false,
-        title: (theme || 'All workloads') + ' regressed workload count by engine', rows: r => regressionRows(r, theme),
-        onSelect: r => choose(r, theme), failures: r => (r.benchmark?.workloads || []).filter(w => w.status === 'failed' && (!theme || w.theme === theme))});
-    }
-    regressions(document.getElementById('chart-benchmark-regressions'), null, 260);
-    const bases = [...new Set(engines.map(e => history.point(selected, e)?.baseline.job).filter(Boolean))];
-    document.getElementById('benchmark-baseline').textContent = 'Selected commit ' + selected.sha.slice(0, 9) + ' · ' +
-      (bases.length ? 'fixed baseline ' + bases.map(v => '#' + v).join(', ') : 'awaiting a complete comparable baseline') +
-      '. Counts are candidates; paired confirmations compare the recorded neighboring revisions.';
-    const affected = document.getElementById('benchmark-affected'); affected.replaceChildren();
-    const changes = history.changes(selected);
-    if (!changes.length) {
-      const p = document.createElement('p'); p.className = 'muted small';
-      p.textContent = engines.some(e => history.point(selected, e)?.count != null) ?
-        (engines.some(e => history.point(selected, e)?.count == null) ? 'Some engines lack comparable measurements. No slowdowns in the available complete measurements.' :
-          'No measured workloads exceed their baseline slowdown threshold.') : 'Comparable measurements are unavailable; this is not a clean result.';
-      affected.append(p);
-    }
-    for (const c of changes) {
-      const button = document.createElement('button'); button.type = 'button'; button.className = 'benchmark-change';
-      button.textContent = name(H.engine(c.after)) + ' · ' + c.workload.workload + ' · ' + signed((c.ratio - 1) * 100) + ' slower · ' + c.confirmation;
-      button.addEventListener('click', () => {
-        selectedMetric = H.selection(selected, c.after); render();
-        document.getElementById('benchmark-detail').scrollIntoView({block: 'start', behavior: 'auto'});
-      });
-      if (affected.children.length === 8) {
-        const details = document.createElement('details'), summary = document.createElement('summary');
-        summary.textContent = 'More affected engine workloads (' + (changes.length - 8) + ')';
-        details.append(summary); affected.append(details);
-      }
-      const details = affected.querySelector('details');
-      (details || affected).append(button);
-    }
-    const ownMetric = r => (r.benchmark?.metrics || []).filter(m => H.selection(r, m) === selectedMetric);
-    const observations = runs.flatMap(ownMetric), representative = observations[0];
-    const plot = document.getElementById('chart-benchmark-metric');
-    if (representative) {
-      const unit = representative.unit, present = engines.filter(e => observations.some(m => H.engine(m) === e));
-      const top = niceMax(Math.max(...observations.map(m => m.value)));
+    const failures = (r, theme) => (r.benchmark?.workloads || []).filter(w => w.status === 'failed' && (!theme || w.theme === theme));
+    const themes = [...new Set(all.flatMap(r => (r.benchmark?.workloads || []).map(w => w.theme)).filter(Boolean))].sort();
+    // Share the relative scale across the overview and every theme for a direct visual comparison.
+    const ratios = runs.flatMap(r => [null, ...themes].flatMap(t => engines.map(e => history.point(r, e, t)?.ratio))).filter(v => v != null);
+    const low = Math.max(0, Math.floor((Math.min(.9, ...ratios) - .02) * 10) / 10);
+    const high = Math.ceil((Math.max(1.1, ...ratios) + .02) * 10) / 10;
+    const ratioAxis = {min: low, max: high, ticks: [low, 1, high], reference: 1, fmt: v => v.toFixed(1) + '×'};
+    function performance(host, theme, height) {
+      const present = engines.filter(e => runs.some(r => history.point(r, e, theme)));
       const series = present.map(e => ({name: name(e), color: colors.get(e), dash: dashes[engines.indexOf(e) % dashes.length],
-        value: r => ownMetric(r).find(m => H.engine(m) === e)?.value,
-        lineKey: r => {const m = ownMetric(r).find(m => H.engine(m) === e); return H.segment(r) + H.workload(r, m?.caseId)?.controls;} }));
-      draw(plot, series, {max: top, ticks: [0, top / 2, top], fmt: v => format(v) + ' ' + unit},
-        {height: 290, endLabels: false, title: select.selectedOptions[0]?.textContent || 'Absolute timing', onSelect: r => {selectedJob = r.job; render();},
-          failures: r => (r.benchmark?.workloads || []).filter(w => w.status === 'failed' &&
-            (w.workload || w.caseId) === JSON.parse(selectedMetric)[0]),
-          rows: r => {
-            const rows = [['commit', r.sha.slice(0, 9)], ['job', '#' + r.job]], measured = ownMetric(r);
-            const best = measured.length ? (representative.direction === 'higher' ? Math.max : Math.min)(...measured.map(m => m.value)) : null;
-            present.forEach(e => {
-              const m = measured.find(m => H.engine(m) === e);
-              rows.push([name(e), m ? format(m.value) + ' ' + unit : 'unavailable']);
-              if (m && best > 0 && m.value > 0 && ['lower', 'higher'].includes(m.direction)) rows.push(['relative to fastest',
-                (representative.direction === 'higher' ? best / m.value : m.value / best).toFixed(2) + '× slower']);
-              if (m?.provider) rows.push(['provider', m.provider]);
-              if (m?.kernel) rows.push(['kernel', m.kernel]);
-            });
-            return rows;
-          }});
-      const values = ownMetric(selected), summary = document.getElementById('benchmark-selected');
-      summary.replaceChildren();
-      for (const e of present) {
-        const m = values.find(m => H.engine(m) === e), cell = document.createElement('div');
-        const label = document.createElement('span'), value = document.createElement('strong');
-        label.textContent = name(e); value.textContent = m ? format(m.value) + ' ' + unit : 'Unavailable';
-        cell.append(label, value); summary.append(cell);
-      }
-      summary.setAttribute('aria-label', 'Absolute timings at commit ' + selected.sha.slice(0, 9));
-    } else {
-      plot.textContent = 'No successful measurements yet.';
-      document.getElementById('benchmark-selected').textContent = '';
+        value: r => history.point(r, e, theme)?.ratio}));
+      draw(host, series, ratioAxis, {height, endLabels: false,
+        title: (theme || 'All workloads') + ' performance relative to baseline, lower is faster',
+        rows: r => regressionRows(r, theme), onSelect: choose, failures: r => failures(r, theme)});
+      return present;
     }
+    const counts = runs.flatMap(r => engines.map(e => history.point(r, e)?.count)).filter(v => v != null);
+    const top = Math.max(1, Math.ceil(niceMax(Math.max(0, ...counts))));
+    draw(document.getElementById('chart-benchmark-regressions'), engines.map((e, i) => ({
+      name: name(e), color: colors.get(e), dash: dashes[i % dashes.length], value: r => history.point(r, e)?.count})),
+    {max: top, ticks: [...new Set([0, Math.round(top / 2), top])], fmt: String},
+    {height: 230, endLabels: false, title: 'Regressed workload count by engine', rows: r => regressionRows(r),
+      onSelect: choose, failures: r => failures(r)});
+    performance(document.getElementById('chart-benchmark-performance'), null, 230);
+    summary(document.getElementById('benchmark-regression-summary'), engines.map(engine => ({engine, text: pointText(history.point(selected, engine), false)})));
+    summary(document.getElementById('benchmark-performance-summary'), engines.map(engine => {
+      const p = history.point(selected, engine);
+      return {engine, text: p?.ratio != null ? relative(p.ratio) + ' baseline' : pointText(p, true)};
+    }));
+    const bases = [...new Set(engines.map(e => history.point(selected, e)?.baseline.job).filter(Boolean))];
+    document.getElementById('benchmark-baseline').textContent = 'Inspecting ' + selected.sha.slice(0, 9) + ' · #' + selected.job +
+      (selectedJob === latest.job && selected.finished ? ' · latest complete run' : selected.finished ? '' : ' · running') + ' · ' +
+      (bases.length ? 'fixed baseline ' + bases.map(v => '#' + v).join(', ') : 'awaiting a complete comparable baseline');
     const grid = document.getElementById('benchmark-themes');
     if (grid) {
-      grid.replaceChildren(); const plots = [];
-      const themes = [...new Set(all.flatMap(r => (r.benchmark?.workloads || []).map(w => w.theme)).filter(Boolean))].sort();
-      for (const theme of themes) {
-        const cell = document.createElement('div'), title = document.createElement('div'), chart = document.createElement('div');
+      grid.replaceChildren();
+      const plots = themes.map(theme => {
+        const cell = document.createElement('div'), title = document.createElement('h3'), chart = document.createElement('div'), values = document.createElement('div');
         cell.className = 'multiple'; title.className = 'mtitle'; title.textContent = theme;
-        cell.append(title, chart); grid.append(cell); plots.push({theme, chart});
+        values.className = 'benchmark-chart-summary'; cell.append(title, chart, values); grid.append(cell);
+        return {theme, chart, values};
+      });
+      for (const {theme, chart, values} of plots) {
+        const present = performance(chart, theme, 150);
+        summary(values, present.map(engine => ({engine, text: pointText(history.point(selected, engine, theme), true)})));
       }
-      for (const {theme, chart} of plots) regressions(chart, theme, 170);
     }
     document.getElementById('benchmark-target-description').textContent = targetMethod === 'best' ?
       'Best earlier comparable run median in the shown history. A single unusually fast run can set this target.' :
@@ -187,15 +131,8 @@
     const fragment = document.createDocumentFragment();
     for (const row of H.caseComparisons(runs, selected, targetMethod)) {
       const tr = document.createElement('tr'), caseCell = document.createElement('td');
-      const title = document.createElement(row.selection ? 'button' : 'code');
+      const title = document.createElement('code');
       title.textContent = row.workload.workload || row.workload.caseId;
-      if (row.selection) {
-        title.type = 'button'; title.className = 'benchmark-case-link';
-        title.addEventListener('click', () => {
-          selectedMetric = row.selection; render();
-          document.getElementById('benchmark-detail').scrollIntoView({block: 'start', behavior: 'auto'});
-        });
-      }
       caseCell.append(title);
       if (row.workload.theme) {
         const theme = document.createElement('small'); theme.textContent = row.workload.theme; caseCell.append(theme);
