@@ -71,12 +71,12 @@ resource "aws_iam_policy" "adapter_fleet" {
   name = "lab-${var.deployment_id}-${var.fleet_name}-adapter"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = length(var.pools) == 0 ? [] : [
-      jsondecode(values(module.pool)[0].adapter_policy_json).Statement[0],
-      merge(jsondecode(values(module.pool)[0].adapter_policy_json).Statement[1], {
-        Resource = [for pool in values(module.pool) : jsondecode(pool.adapter_policy_json).Statement[1].Resource]
+    Statement = flatten([for pool in slice(values(module.pool), 0, min(1, length(var.pools))) : [
+      jsondecode(pool.adapter_policy_json).Statement[0],
+      merge(jsondecode(pool.adapter_policy_json).Statement[1], {
+        Resource = [for member in values(module.pool) : jsondecode(member.adapter_policy_json).Statement[1].Resource]
       })
-    ]
+    ]])
   })
 }
 
