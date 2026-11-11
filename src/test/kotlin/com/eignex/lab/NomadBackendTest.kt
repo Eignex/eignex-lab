@@ -1014,6 +1014,28 @@ class NomadBackendTest {
         assertEquals(manifest, Json.decodeFromString<WorkManifest>(body))
     }
 
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `registration keeps repetition ordering in the coordinator and off the worker wire`(preparation: Boolean) = testApplication {
+        setup(spec = ExperimentSpec("pass-sweep", repeats = 3, repeatOrder = RepeatOrder.PASS, host = HostPlacement.AUTO),
+            preparation = preparation)
+        application { workerApi(store, backend(), artifacts) { true } }
+
+        val response = client.post("/worker/v1/sessions/${session.id}/register") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.Authorization, "Bearer $token")
+            header("X-Lab-Allocation", "allocation")
+            header("X-Lab-Identity", jwt())
+            setBody(Json.encodeToString(WorkerRegistration("release")))
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = response.bodyAsText()
+        assertFalse("repeatOrder" in Json.parseToJsonElement(body).jsonObject.getValue("experiment").jsonObject)
+        assertEquals(manifest.copy(experiment = manifest.experiment.copy(repeatOrder = RepeatOrder.PROBLEM)),
+            Json.decodeFromString<WorkManifest>(body))
+        assertEquals(RepeatOrder.PASS, store.execution.manifest(session.id).experiment.repeatOrder)
+    }
+
     private val root = Files.createTempDirectory("nomad-backend")
     private val file = root.resolve("lab.db")
     private val store = Store(file)
