@@ -4,6 +4,8 @@ import com.eignex.lab.analysis.*
 
 /** Benchmark history shows overall and theme performance, with absolute timings in the case table. */
 internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html = buildHtml {
+    val koblas = repoUrl.removeSuffix("/").removeSuffix(".git").endsWith("/Eignex/koblas")
+    val chartScope = if (koblas) " · JVM SIMD" else ""
     append(Html("""
 <div class="trend-toolbar">
 <nav class="queue-sections" aria-label="Benchmark sections"><a href="#benchmark-performance">Performance</a><a href="#benchmark-themes-section">Themes</a><a href="#benchmark-cases-section">Case timings</a></nav>
@@ -12,13 +14,13 @@ internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html 
 <div id="benchmark-engines" class="legend"></div>
 <div id="benchmark-performance" class="trend-charts benchmark-overview">
 <section class="chart-panel" aria-labelledby="benchmark-regressions-heading">
-<h2 id="benchmark-regressions-heading">Regressed workloads by engine</h2>
+<h2 id="benchmark-regressions-heading">Regressed workloads$chartScope</h2>
 <p class="chart-description">Workloads beyond their own slowdown threshold since the first complete comparable run. Fewer is better. Counts are candidates; paired confirmations compare neighboring revisions.</p>
 <div class="chart" id="chart-benchmark-regressions"></div>
 <div id="benchmark-regression-summary" class="benchmark-chart-summary"></div>
 </section>
 <section class="chart-panel" aria-labelledby="benchmark-performance-heading">
-<h2 id="benchmark-performance-heading">Performance vs baseline</h2>
+<h2 id="benchmark-performance-heading">Performance vs baseline$chartScope</h2>
 <p class="chart-description">Geometric mean of each workload’s slowdown against its own baseline, equally weighted. 1× is unchanged; lower is faster. Absolute timings are in the table below.</p>
 <div class="chart" id="chart-benchmark-performance"></div>
 <div id="benchmark-performance-summary" class="benchmark-chart-summary"></div>
@@ -30,13 +32,12 @@ internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html 
     if (runs.any { run -> run.benchmark?.workloads?.any { it.theme != null } == true }) {
         append(Html("""
 <section id="benchmark-themes-section" aria-labelledby="benchmark-themes-heading">
-<h2 id="benchmark-themes-heading">Performance by theme</h2>
-<p class="chart-description">The same baseline-relative performance and scale in every theme, with regression counts at the inspected commit. Each engine is compared with its own baseline.</p>
+<h2 id="benchmark-themes-heading">Performance by theme$chartScope</h2>
+<p class="chart-description">The same baseline-relative performance and scale in every theme, with regression counts at the inspected commit. Each workload is compared with its own baseline.</p>
 <div class="multiples" id="benchmark-themes"></div>
 </section>
 """))
     }
-    val koblas = repoUrl.removeSuffix("/").removeSuffix(".git").endsWith("/Eignex/koblas")
     append(Html("""
 <section id="benchmark-cases-section" aria-labelledby="benchmark-cases-heading">
 <h2 id="benchmark-cases-heading">Case timings</h2>
