@@ -36,15 +36,17 @@ internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html 
 </section>
 """))
     }
+    val koblas = repoUrl.removeSuffix("/").removeSuffix(".git").endsWith("/Eignex/koblas")
     append(Html("""
 <section id="benchmark-cases-section" aria-labelledby="benchmark-cases-heading">
 <h2 id="benchmark-cases-heading">Case timings</h2>
-<p class="chart-description">Every case and engine at the inspected commit, compared with its own earlier measurements. These historical targets differ from the charts’ fixed baseline.</p>
+<p class="chart-description">One row per case. Each engine is compared independently with its own earlier measurements: current timing, historical target, slowdown and prior-run count. These targets differ from the charts’ fixed baseline.</p>
 <div class="tools" role="group" aria-label="Historical timing target"><span class="muted small">Target</span><button type="button" class="chip on" aria-pressed="true" data-benchmark-target="p05">Fast historical percentile</button><button type="button" class="chip" aria-pressed="false" data-benchmark-target="best">Best observed</button></div>
 <p id="benchmark-target-description" class="muted small"></p>
 <p id="benchmark-table-context" class="muted small"></p>
+<p id="benchmark-table-coverage" class="muted small"></p>
 <div class="scroll" role="region" aria-label="Case timing comparisons" tabindex="0">
-<table class="benchmark-cases"><thead><tr><th scope="col">Case</th><th scope="col">Engine</th><th scope="col" class="num">Current</th><th scope="col" class="num">Historical target</th><th scope="col" class="num">Slowdown</th><th scope="col" class="num">Prior runs</th><th scope="col">Status</th></tr></thead><tbody id="benchmark-case-rows"></tbody></table>
+<table class="benchmark-cases" data-koblas="$koblas"><thead><tr id="benchmark-case-head"><th scope="col">Case</th></tr></thead><tbody id="benchmark-case-rows"></tbody></table>
 </div>
 </section>
 """))

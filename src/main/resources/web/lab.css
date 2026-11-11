@@ -1647,10 +1647,12 @@ summary { cursor: pointer; }
 
 #benchmark-engines span { display: inline-flex; align-items: center; gap: 6px; white-space: normal; }
 
-.benchmark-cases { min-width: 840px; width: 100%; }
+.benchmark-cases { min-width: 780px; width: 100%; }
 .benchmark-cases td, .benchmark-cases th { padding: 8px 12px; }
-.benchmark-cases td:first-child { min-width: 230px; max-width: 440px; overflow-wrap: anywhere; }
-.benchmark-cases td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.benchmark-cases tbody th { text-align: left; font-weight: 400; min-width: 230px; max-width: 440px; overflow-wrap: anywhere; }
+.benchmark-engine-cell { min-width: 150px; font-variant-numeric: tabular-nums; vertical-align: top; }
+.benchmark-engine-cell strong { display: block; font-weight: 500; }
+.benchmark-history-delta { display: block; margin-top: 4px; font-size: 12px; }
 .benchmark-cases small { display: block; color: var(--muted); margin-top: 4px; }
 
 .benchmark-overview .chart-description { min-height: 58px; }

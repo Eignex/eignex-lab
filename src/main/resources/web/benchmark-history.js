@@ -63,6 +63,38 @@
       (a.workload.workload || a.workload.caseId).localeCompare(b.workload.workload || b.workload.caseId) || a.engine.localeCompare(b.engine));
   }
 
+  /** Pivot exact-engine comparisons without sharing samples or targets between columns. */
+  function caseTable(runs, selected, columns, method = 'p05') {
+    const comparisons = caseComparisons(runs, selected, method), rows = [];
+    for (const w of selected.benchmark?.workloads || []) {
+      const own = comparisons.filter(row => row.workload.caseId === w.caseId);
+      // Distinct metrics keep distinct rows; unlike units or directions never compete for a cell.
+      const identities = new Map();
+      for (const row of own) {
+        if (!columns.some(c => c.engine === row.engine) || !row.metric.name) continue;
+        const id = JSON.stringify([kind(row.metric), row.metric.unit, row.metric.direction]);
+        if (!identities.has(id)) identities.set(id, new Map());
+        identities.get(id).set(row.engine, row);
+      }
+      if (!identities.size) identities.set(null, new Map());
+      for (const [identity, measurements] of identities) {
+        const cells = columns.map(column => {
+          const row = measurements.get(column.engine);
+          if (row) return row;
+          const status = w.status !== 'success' ? w.status : w.engines?.[column.engine] === 'unsupported' ? 'unsupported' :
+            w.instrumented ? 'instrumented' : 'unavailable';
+          return {workload: w, engine: column.engine, current: null, target: null, ratio: null, samples: 0, status};
+        });
+        rows.push({workload: w, identity, cells});
+      }
+    }
+    return rows.sort((a, b) => {
+      const worst = row => Math.max(-Infinity, ...row.cells.map(c => c.ratio ?? -Infinity));
+      return worst(b) - worst(a) || (a.workload.workload || a.workload.caseId).localeCompare(b.workload.workload || b.workload.caseId) ||
+        String(a.identity).localeCompare(String(b.identity));
+    });
+  }
+
   /** Fixed baselines contain complete workload sets; missing rows never count as recoveries. */
   function history(runs) {
     const baselines = new Map(), points = new Map();
@@ -120,7 +152,7 @@
       }
     };
   }
-  const api = {engine, key, segment, selection, workload, slowdown, history, caseComparisons};
+  const api = {engine, key, segment, selection, workload, slowdown, history, caseComparisons, caseTable};
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.BenchmarkHistory = api;
 })(typeof window === 'object' ? window : globalThis);

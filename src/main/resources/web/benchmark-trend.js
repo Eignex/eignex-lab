@@ -125,38 +125,61 @@
     jobLink.href = '/jobs/' + selected.job; jobLink.textContent = '#' + selected.job;
     tableContext.replaceChildren(document.createTextNode('Current: ' + selected.sha.slice(0, 9) + ' · '), jobLink,
       document.createTextNode('. Sorted by largest slowdown. Targets exclude this run and every later run; they do not change the graph baseline or paired confirmation policy.'));
+    const table = document.querySelector('.benchmark-cases');
+    const selectedEngines = new Set((selected.benchmark?.metrics || []).map(H.engine));
+    (selected.benchmark?.workloads || []).forEach(w => Object.keys(w.engines || {}).forEach(e => selectedEngines.add(e)));
+    const columns = table.dataset.koblas === 'true' ? [
+      {engine: 'jvm-simd', label: 'JVM SIMD'}, {engine: 'accelerate-jvm', label: 'Accelerate'}, {engine: 'jvm-scalar', label: 'Portable'}
+    ] : engines.map(engine => ({engine, label: name(engine)}));
+    const head = document.getElementById('benchmark-case-head'); head.replaceChildren();
+    ['Case', ...columns.map(c => c.label)].forEach((label, i) => {
+      const th = document.createElement('th'); th.scope = 'col'; th.textContent = label;
+      if (i) th.title = columns[i - 1].engine; head.append(th);
+    });
+    const missing = columns.filter(c => !selectedEngines.has(c.engine));
+    document.getElementById('benchmark-table-coverage').textContent = missing.length ?
+      'No exact-engine capture in this run for ' + missing.map(c => c.label).join(', ') + '. Default-engine measurements are not substituted.' : '';
     const body = document.getElementById('benchmark-case-rows'); body.replaceChildren();
     const statusLabels = {measured: 'Measured', failed: 'Capture failed', pending: 'Pending', skipped: 'Skipped',
-      unsupported: 'Unsupported', instrumented: 'Instrumented', unavailable: 'Unavailable'};
+      unsupported: 'Unsupported', instrumented: 'Instrumented', unavailable: 'Not measured'};
     const fragment = document.createDocumentFragment();
-    for (const row of H.caseComparisons(runs, selected, targetMethod)) {
-      const tr = document.createElement('tr'), caseCell = document.createElement('td');
-      const title = document.createElement('code');
-      title.textContent = row.workload.workload || row.workload.caseId;
+    for (const row of H.caseTable(runs, selected, columns, targetMethod)) {
+      const tr = document.createElement('tr'), caseCell = document.createElement('th'); caseCell.scope = 'row';
+      const title = document.createElement('code'); title.textContent = row.workload.workload || row.workload.caseId;
       caseCell.append(title);
-      if (row.workload.theme) {
-        const theme = document.createElement('small'); theme.textContent = row.workload.theme; caseCell.append(theme);
+      const identity = row.identity && JSON.parse(row.identity);
+      if (row.workload.theme || identity && identity[0] !== 'median_ns') {
+        const detail = document.createElement('small');
+        detail.textContent = [row.workload.theme, identity && identity[0] !== 'median_ns' ? identity[0] + ' · ' + identity[1] : null].filter(Boolean).join(' · ');
+        caseCell.append(detail);
       }
       tr.append(caseCell);
-      function cell(text, numeric = false) {
-        const td = document.createElement('td'); td.textContent = text;
-        if (numeric) td.className = 'num'; tr.append(td); return td;
+      for (const cell of row.cells) {
+        const td = document.createElement('td'); td.className = 'benchmark-engine-cell';
+        const timing = value => value == null ? '—' : format(value) + ' ' + cell.metric.unit;
+        const value = document.createElement('strong');
+        value.textContent = cell.current == null ? statusLabels[cell.status] || 'Not measured' : timing(cell.current);
+        td.append(value);
+        if (cell.status !== 'measured' && cell.current != null) {
+          const status = document.createElement('small'); status.textContent = statusLabels[cell.status] || 'Unavailable'; td.append(status);
+        }
+        if (cell.target != null) {
+          const target = document.createElement('small'); target.textContent = 'Historical target ' + timing(cell.target); td.append(target);
+        }
+        const delta = document.createElement('span'); delta.className = 'benchmark-history-delta';
+        delta.textContent = cell.ratio == null ? (cell.samples ? 'Comparison unavailable' : 'No comparable history') :
+          signed((cell.ratio - 1) * 100) + ' vs own history';
+        if (cell.ratio > 1 + row.workload.threshold && row.workload.threshold > 0) delta.classList.add('FAILED');
+        td.append(delta);
+        const count = document.createElement('small');
+        count.textContent = cell.samples + ' prior run' + (cell.samples === 1 ? '' : 's') + (cell.limited ? ' · limited history' : '');
+        td.append(count); td.title = cell.engine; tr.append(td);
       }
-      cell(row.engine === 'unknown' ? 'Unknown' : name(row.engine));
-      const timing = v => v == null ? '—' : format(v) + ' ' + row.metric.unit;
-      cell(timing(row.current), true); cell(timing(row.target), true);
-      const delta = cell(row.ratio == null ? '—' : signed((row.ratio - 1) * 100), true);
-      if (row.ratio > 1 + row.workload.threshold && row.workload.threshold > 0) delta.classList.add('FAILED');
-      const count = cell(String(row.samples), true);
-      if (row.limited) {
-        const note = document.createElement('small'); note.textContent = 'limited history'; count.append(note);
-      }
-      cell(statusLabels[row.status] || 'Unavailable');
       fragment.append(tr);
     }
     body.append(fragment);
     if (!body.children.length) {
-      const tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = 7;
+      const tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = columns.length + 1;
       td.textContent = 'No planned cases are available for this run.'; tr.append(td); body.append(tr);
     }
   };

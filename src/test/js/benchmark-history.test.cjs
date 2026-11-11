@@ -183,3 +183,65 @@ test('relative performance reverses throughput and resets at a new baseline', ()
   assert.equal(history.point(after, 'jvm-scalar').ratio, .5);
   assert.equal(history.point(next, 'jvm-scalar').ratio, 1);
 });
+
+
+const columns = [{engine: 'jvm-simd'}, {engine: 'accelerate-jvm'}, {engine: 'jvm-scalar'}];
+function threeEngines(job, simd, accelerate, portable) {
+  const r = run(job, [[portable, 1000000], [simd, 1000000]]);
+  r.benchmark.metrics.push({caseId: 'dot', name: 'median_ns/accelerate-jvm', engine: 'accelerate-jvm',
+    unit: 'ns/op', direction: 'lower', value: accelerate});
+  return r;
+}
+
+test('three engine columns each use their own earlier history and preserve distinct slowdowns', () => {
+  const runs = [threeEngines(1, 10, 100, 1000), threeEngines(2, 20, 200, 2000),
+    threeEngines(3, 30, 50, 1300), threeEngines(4, 1, 1, 1)];
+
+  const rows = H.caseTable(runs, runs[2], columns), dot = rows.find(r => r.workload.caseId === 'dot');
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(dot.cells.map(c => c.engine), ['jvm-simd', 'accelerate-jvm', 'jvm-scalar']);
+  assert.deepEqual(dot.cells.map(c => c.target), [10.5, 105, 1050]);
+  assert.deepEqual(dot.cells.map(c => c.current), [30, 50, 1300]);
+  assert.deepEqual(dot.cells.map(c => c.samples), [2, 2, 2]);
+  assert.deepEqual(dot.cells.map(c => c.ratio), [30 / 10.5, 50 / 105, 1300 / 1050]);
+  const best = H.caseTable(runs, runs[2], columns, 'best').find(r => r.workload.caseId === 'dot');
+  assert.deepEqual(best.cells.map(c => c.target), [10, 100, 1000]);
+});
+
+test('default engine provider attribution never fills an exact engine column', () => {
+  const r = run(1);
+  r.benchmark.metrics = r.benchmark.metrics.map(m => ({...m, name: 'median_ns', engine: 'jvm-default', provider: m.engine}));
+
+  const rows = H.caseTable([r], r, columns);
+
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => row.cells.length === 3 && row.cells.every(c =>
+    c.current === null && c.target === null && c.ratio === null && c.samples === 0 && c.status === 'unavailable')));
+});
+
+test('an unavailable engine keeps its own historical target without borrowing a current timing', () => {
+  const before = threeEngines(1, 10, 100, 1000), selected = threeEngines(2, 20, 200, 2000);
+  selected.benchmark.metrics = selected.benchmark.metrics.filter(m => m.engine !== 'accelerate-jvm');
+  selected.benchmark.workloads[0].engines = {'accelerate-jvm': 'unsupported'};
+
+  const dot = H.caseTable([before, selected], selected, columns).find(r => r.workload.caseId === 'dot');
+
+  assert.equal(dot.cells[1].current, null);
+  assert.equal(dot.cells[1].target, 100);
+  assert.equal(dot.cells[1].ratio, null);
+  assert.equal(dot.cells[1].status, 'unsupported');
+  assert.deepEqual(dot.cells.map(c => c.samples), [1, 1, 1]);
+  assert.equal(dot.cells[0].current, 20);
+  assert.equal(dot.cells[2].current, 2000);
+});
+
+test('different metric units remain separate rows within the engine comparison table', () => {
+  const r = threeEngines(1, 10, 100, 1000);
+  r.benchmark.metrics.find(m => m.engine === 'accelerate-jvm').unit = 'seconds';
+
+  const rows = H.caseTable([r], r, columns).filter(r => r.workload.caseId === 'dot');
+
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => new Set(row.cells.filter(c => c.current != null).map(c => c.metric.unit)).size === 1));
+});
