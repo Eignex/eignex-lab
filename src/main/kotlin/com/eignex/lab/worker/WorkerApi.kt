@@ -90,7 +90,9 @@ fun Application.workerApi(
             post("/register") {
                 // Its credentials are checked as the session is bound to them; a registration is a release name, no more.
                 val c = call.credentials(); val body = Json.decodeFromString<WorkerRegistration>(call.bodyText(REGISTRATION_BYTES))
-                call.respond(backend.register(c.session, c.token, c.allocation, c.identity, body.release))
+                val manifest = backend.register(c.session, c.token, c.allocation, c.identity, body.release)
+                // Row ordering belongs to the coordinator; pinned workers decode the experiment strictly.
+                call.respond(manifest.copy(experiment = manifest.experiment.copy(repeatOrder = RepeatOrder.PROBLEM)))
             }
             // Gradle's HTTP build cache protocol, proxied by the worker: 404 is a miss, and a refused write is not an error.
             get("/gradle-cache/{key}") {
