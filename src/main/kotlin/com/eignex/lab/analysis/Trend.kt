@@ -189,7 +189,7 @@ object Trend {
                     return@mapNotNull null
                 }
                 val baselineJob = previous[comparisonKey(trend)]?.takeIf { job.status == Status.DONE || trend.benchmark != null && job.status == Status.FAILED }
-                val flips = baselineJob?.let { Confirm.flips(own(it), own(job.id)) }
+                val flips = baselineJob?.let { Confirm.flips(own(it), own(job.id), candidate = true) }
                 val confirmationCases = confirmation?.takeIf { it.status == Status.DONE || trend.benchmark != null }
                     ?.let { data.scoringCases(it.id) }.orEmpty()
                 val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(confirmationCases) }

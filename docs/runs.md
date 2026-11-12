@@ -621,6 +621,7 @@ labels controlled runtime/compiler series and historical records explicitly.
 Migrations start separate trend segments and need a retained bounded old/current
 bridge before a solver-only attribution. A seed change cannot count as recovery.
 Different independent-checking policy labels also split controlled series and withhold revision attribution.
+An undecided record has no claim to check, so its absent label pairs with a checked claim.
 Retained-case rechecks invalidate finished trend points and confirmation counts without changing the original job's finish time.
 
 The coordinator attaches `labExecution` from the accepted iteration's checksum-verified
@@ -629,6 +630,8 @@ JDK/platform, literal cgroup CPU/memory ceilings, session budget, iteration conc
 and paired case count. Resource counters stay in the linked receipt and do not split
 a series. Different frames split controlled series; missing or advisory observations
 withhold comparisons across runs. Repository output cannot supply this authority.
+Flips between successive scheduled runs are candidates: they need equal logical controls and source hashes but no
+execution frame, and only queue the paired confirmation that carries the attribution.
 Preparation resources are separate from these solve observations.
 
 Paired confirmations use the coordinator's accepted worker attempt for each row.

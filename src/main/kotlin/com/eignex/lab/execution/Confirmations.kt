@@ -26,7 +26,7 @@ internal class Confirmations(private val local: LocalNode, private val paths: Da
         val previous = history.firstOrNull() ?: return
         val previousCases = firstArmCases(previous.id)
         var reference = previous
-        var flips = Confirm.flips(previousCases, currentCases)
+        var flips = Confirm.flips(previousCases, currentCases, candidate = true)
         history.getOrNull(1)?.let { baseline ->
             val baselineCases = firstArmCases(baseline.id)
             val anchored = Confirm.persistent(baselineCases, previousCases, currentCases)

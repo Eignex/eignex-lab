@@ -104,7 +104,7 @@ class ComparisonControlsTest {
     @ParameterizedTest
     @ValueSource(booleans = [false, true])
     fun `checking policy migrations split series and withhold revision attribution`(missing: Boolean) {
-        val base = case()
+        val base = case().let { it.copy(record = JsonObject((it.record as JsonObject) + ("feasible" to JsonPrimitive(true)))) }
         val record = base.record as JsonObject
         val before = base.copy(record = JsonObject(record + ("labCheck" to JsonObject(mapOf(
             "policy" to JsonPrimitive("policy-v1"), "state" to JsonPrimitive("valid"))))))
@@ -113,6 +113,27 @@ class ComparisonControlsTest {
 
         assertNotNull(ComparisonControls.mismatch(before, after))
         assertTrue(ComparisonControls.series(before) != ComparisonControls.series(after))
+    }
+
+    @Test
+    fun `an undecided record without a checking policy pairs with a checked claim`() {
+        val undecided = case()
+        val checked = undecided.copy(record = JsonObject((undecided.record as JsonObject) + mapOf(
+            "feasible" to JsonPrimitive(true),
+            "labCheck" to JsonObject(mapOf("policy" to JsonPrimitive("policy-v1"), "state" to JsonPrimitive("valid"))))))
+
+        assertNull(ComparisonControls.mismatch(checked, undecided))
+    }
+
+    @Test
+    fun `candidate flips across runs need no execution receipt`() {
+        val after = case().let { it.copy(origin = CaseOrigin(8, "row"),
+            record = JsonObject((it.record as JsonObject) - "labExecution")) }
+        val before = after.copy(origin = CaseOrigin(7, "row"),
+            record = JsonObject((after.record as JsonObject) + ("feasible" to JsonPrimitive(true))))
+
+        assertEquals(0, Confirm.flips(listOf(before), listOf(after)).lost.size)
+        assertEquals(1, Confirm.flips(listOf(before), listOf(after), candidate = true).lost.size)
     }
 
     @Test

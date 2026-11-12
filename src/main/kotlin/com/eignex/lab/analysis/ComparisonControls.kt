@@ -20,7 +20,11 @@ internal object ComparisonControls {
     fun problem(case: CaseResult): Pair<String, String> = case.problem.suite to
         (case.problem.benchCase?.attributes?.get("problem") ?: case.problem.problem)
 
-    fun mismatch(a: CaseResult, b: CaseResult): String? {
+    /**
+     * Why [a] and [b] cannot carry a revision comparison, or null when they can. A [candidate] pair only nominates a
+     * source for a paired confirmation, so it needs equal logical controls but no physical execution authority.
+     */
+    fun mismatch(a: CaseResult, b: CaseResult, candidate: Boolean = false): String? {
         val left = a.record as? JsonObject ?: return "missing record"
         val right = b.record as? JsonObject ?: return "missing record"
         val controlled = "comparisonControls" in left || "comparisonControls" in right ||
@@ -39,12 +43,12 @@ internal object ComparisonControls {
         if (text(x, "policy") != "matched-source-v1" || text(y, "policy") != "matched-source-v1") return "unknown comparison policy"
         if (REQUIRED.any { text(x, it).isNullOrBlank() || text(y, it).isNullOrBlank() }) return "incomplete controls"
         if (x != y) return "runtime, source dependency, seed or allowance migration"
-        if (!paired) {
+        if (!paired && !candidate) {
             val execution = ComparisonExecution.frame(left) ?: return "physical execution controls unavailable"
             val otherExecution = ComparisonExecution.frame(right) ?: return "physical execution controls unavailable"
             if (execution != otherExecution) return "physical execution migration"
         }
-        if (checkerPolicy(left) != checkerPolicy(right)) return "source checking policy migration"
+        if (checkerMigration(left, right)) return "source checking policy migration"
         if (seed(a)?.toString() != text(x, "solverSeed") || seed(b)?.toString() != text(y, "solverSeed")) return "inconsistent seed"
         if (text(left, "seed") != text(x, "solverSeed") || text(right, "seed") != text(y, "solverSeed")) return "inconsistent recorded seed"
         for ((recordKey, controlKey) in listOf("budgetMs" to "solverBudgetMs", "processors" to "cpus")) {
@@ -72,6 +76,18 @@ internal object ComparisonControls {
             ?.plus(record?.let(ComparisonExecution::series) ?: "execution-unqualified")
             ?.plus(record?.let(::checkerPolicy) ?: "checking-unrequested")?.joinToString(":") ?: "historical-unqualified"
     }
+
+    /** An undecided record carries no claim to check, so its absent policy is no migration. */
+    private fun checkerMigration(left: JsonObject, right: JsonObject): Boolean {
+        val a = checkerPolicy(left)
+        val b = checkerPolicy(right)
+        if (a == b) return false
+        if (a != null && b != null) return true
+        return !undecided(if (a == null) left else right)
+    }
+
+    private fun undecided(record: JsonObject) = text(record, "feasible") == null &&
+        text(record["stats"] as? JsonObject, "reportedFeasible") == null
 
     private fun checkerPolicy(record: JsonObject): String? = text(record["labCheck"] as? JsonObject, "policy")
 
