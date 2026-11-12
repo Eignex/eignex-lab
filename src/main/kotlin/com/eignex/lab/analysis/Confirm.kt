@@ -76,16 +76,16 @@ object Confirm {
     /** Feasibility, proof and quality use a majority of matched seed/repeat blocks.
      * Missing/invalid blocks cannot vote, but remain in the denominator. Time never selects a transition.
      */
-    fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
+    fun flips(before: List<CaseResult>, after: List<CaseResult>, candidate: Boolean = false): Flips {
         val guarded = OptimumClaims.local(before + after)
         val benchmarks = BenchTransitions.flips(before, after)
-        return qualifiedFlips(guarded.take(before.size), guarded.drop(before.size)).copy(
+        return qualifiedFlips(guarded.take(before.size), guarded.drop(before.size), candidate).copy(
             benchmarkFailed = benchmarks.benchmarkFailed, benchmarkRecovered = benchmarks.benchmarkRecovered,
             metricLost = benchmarks.metricLost, metricGained = benchmarks.metricGained,
             metricRegressions = benchmarks.metricRegressions, metricImprovements = benchmarks.metricImprovements)
     }
 
-    private fun qualifiedFlips(before: List<CaseResult>, after: List<CaseResult>): Flips {
+    private fun qualifiedFlips(before: List<CaseResult>, after: List<CaseResult>, candidate: Boolean): Flips {
         val problems = (before + after).associateBy(ComparisonControls::problem)
         val both = before.map(ComparisonControls::problem).toSet().intersect(after.map(ComparisonControls::problem).toSet())
             .sortedWith(compareBy({ it.first }, { it.second }))
@@ -110,7 +110,7 @@ object Confirm {
                 val ca = a[block]?.singleOrNull() ?: continue
                 val cb = b[block]?.singleOrNull() ?: continue
                 if (ca.status != Status.DONE || cb.status != Status.DONE) continue
-                if (ComparisonControls.mismatch(ca, cb) != null) continue
+                if (ComparisonControls.mismatch(ca, cb, candidate) != null) continue
                 val hashesA = (ca.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull || (it is JsonObject && it.isEmpty()) }
                 val hashesB = (cb.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull || (it is JsonObject && it.isEmpty()) }
                 if (hashesA != null && hashesB != null && hashesA != hashesB) continue
@@ -246,8 +246,8 @@ object Confirm {
 
     internal fun persistent(baseline: List<CaseResult>, previous: List<CaseResult>, current: List<CaseResult>): Flips {
         fun identity(problem: Problem) = problem.suite to (problem.benchCase?.attributes?.get("problem") ?: problem.problem)
-        val earlier = flips(baseline, previous).objectiveLost.map(::identity).toSet()
-        val anchored = flips(baseline, current)
+        val earlier = flips(baseline, previous, candidate = true).objectiveLost.map(::identity).toSet()
+        val anchored = flips(baseline, current, candidate = true)
         return anchored.copy(persistentObjectiveLost = anchored.objectiveLost.filter { identity(it) in earlier })
     }
 
