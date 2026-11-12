@@ -1,7 +1,7 @@
 name: images
 
 # The reference solver images the lab builds on its hosts (ScipReference, ClaspReference, Xcsp3CpSatReference) are
-# built here on every change, so a broken Dockerfile or solver script is caught before a host rebuilds it.
+# built here on every change, so a broken Dockerfile or solver is caught before a host rebuilds it.
 on:
   push:
     branches: [main]
@@ -19,20 +19,33 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         image: [clasp, scip, xcsp3-cpsat]
+        runner: [ubuntu-latest]
+        include:
+          # The lab Mac builds the cp-sat image for arm64, which loads OR-Tools' aarch64 native build.
+          - image: xcsp3-cpsat
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Test the cp-sat solver inside its image
+        if: matrix.image == 'xcsp3-cpsat'
+        run: docker build --target test "images/${{ matrix.image }}"
       - name: Build
         run: docker build -t "eignex-lab-${{ matrix.image }}:ci" "images/${{ matrix.image }}"
-      - name: Test the cp-sat solver script inside its image
+      - name: Run the cp-sat image on its smoke instance
         if: matrix.image == 'xcsp3-cpsat'
-        run: >-
-          docker run --rm --entrypoint python -v "$PWD/images/xcsp3-cpsat:/src:ro" -w /src
-          eignex-lab-xcsp3-cpsat:ci -m unittest -v test_solve
+        run: |
+          out=$(docker run --rm --memory 6g --memory-swap 6g --cpus 1 \
+            -v "$PWD/images/xcsp3-cpsat/src/test/resources:/in:ro" eignex-lab-xcsp3-cpsat:ci /in/smoke.xml 5 1 3)
+          echo "$out"
+          [ "$(echo "$out" | wc -l)" -eq 3 ]
+          echo "$out" | sed -n 1p | grep -Eq '^o -?[0-9]+$'
+          echo "$out" | sed -n 2p | grep -q '^v <instantiation cost="'
+          echo "$out" | sed -n 3p | grep -q '"exit": "OPTIMAL"'

@@ -161,8 +161,12 @@ object References {
      *  were not checked against the model. */
     val UNCHECKED_SOLVERS = listOf("scip", "highs")
 
-    internal const val XCSP_POLICY = "xcsp3-source-preserving-v2"
-    private val xcspIdentity = com.eignex.lab.checker.sourcePreservingXcspIdentity(XCSP_POLICY)
+    internal const val XCSP_POLICY = com.eignex.lab.reference.Xcsp3CpSatReference.VERSION
+
+    /** The CPMpy importer's policy, which the JVM importer ([XCSP_POLICY]) replaced with the same semantics: its rows stay
+     *  current, and a rerun records the new identity over them. */
+    internal const val XCSP_CPMPY_POLICY = "xcsp3-source-preserving-v2"
+    private val xcspIdentity = com.eignex.lab.checker.sourcePreservingXcspIdentity(XCSP_POLICY, XCSP_CPMPY_POLICY)
 
     internal fun stale(solver: String, version: String, collection: String = ""): Boolean =
         solver in UNCHECKED_SOLVERS && version.isEmpty() ||

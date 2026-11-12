@@ -331,7 +331,7 @@ object Defaults {
     const val ARTIFACT_ARCHIVE_GRACE_MIN = 60L
     const val ARCHIVE_MAX_UNPACKED_MB = 16384L
     /** The reference image tags a Docker cleanup always keeps ([DockerCleanup]). */
-    const val DOCKER_KEEP = "eignex-lab-xcsp3-cpsat:source-preserving-v2,eignex-lab-scip:latest,eignex-lab-clasp:latest"
+    const val DOCKER_KEEP = "eignex-lab-xcsp3-cpsat:source-preserving-v3,eignex-lab-scip:latest,eignex-lab-clasp:latest"
     val TRUSTED_USERS = setOf("rasros")
 
     /** The machine's processors less two, for the JVMs around the solves and the machine itself; at least one. */

@@ -276,6 +276,24 @@ class ReferencesTest {
     }
 
     @Test
+    fun `rows of the CPMpy importer stay current beside the JVM importer and a rerun replaces them`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = ProblemKey("xcsp3-cop-22to25", "case")
+        val cpmpy = ref(true, 7.0, proven = true).copy(
+            version = "eignex-lab-xcsp3-cpsat:source-preserving-v2@sha256:${"1".repeat(64)}|${References.XCSP_CPMPY_POLICY}",
+        )
+        val jvm = ref(true, 7.0, proven = true).copy(
+            version = "eignex-lab-xcsp3-cpsat:source-preserving-v3@sha256:${"2".repeat(64)}|${References.XCSP_POLICY}",
+        )
+        store.references.put(listOf(key to cpmpy), "cpmpy")
+
+        assertEquals(false, store.references.rows(key.collection, key.problem).single().stale)
+        assertEquals(1, store.references.put(listOf(key to jvm), "jvm"))
+        assertEquals(jvm, store.references.rows(key.collection, key.problem).single())
+        assertEquals(setOf(key), store.references.matching(listOf(key)).keys)
+    }
+
+    @Test
     fun `retired XCSP records arrive stale without changing their verdict`() {
         val record = Json.parseToJsonElement(
             """{"solver":"cp-sat","budgetMs":60000,"feasible":false,"proven":true,"stats":{"referenceVersion":"klause-xcsp3-cpsat:latest@sha256:${"0".repeat(64)}|xcsp3-matrix-row-major-v1"}}""",
