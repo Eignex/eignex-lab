@@ -324,6 +324,15 @@ class NomadBackendTest {
         assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
     }
 
+    @Test fun `only registration itself skips worker authentication, not a route whose last segment is register`() = testApplication {
+        setup(1); register()
+        application { workerApi(store, backend(), artifacts) { true } }
+        // Unauthenticated: refused as fenced (409) before the handler, not reached and failing on a missing session.
+        assertEquals(HttpStatusCode.Conflict, client.get("/worker/v1/sessions/session/gradle-cache/register").status)
+        assertEquals(HttpStatusCode.Conflict, client.get("/worker/v1/sessions/session/inputs/register").status)
+        assertEquals(HttpStatusCode.NotFound, client.get("/worker/v1/sessions/session/register").status, "registration is a POST")
+    }
+
     @Test fun `authenticated cost evidence survives fencing without permitting late work or foreign attempts`() = testApplication {
         val id = setup(1); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!

@@ -2,9 +2,12 @@
 FROM eclipse-temurin@sha256:ba0f0e1a33864105e1d454e88105c617ab40f71062db1f306bf58be32a3f8e5e
 RUN apt-get update && apt-get install -y --no-install-recommends git time perl util-linux zstd xz-utils bzip2 libopenblas0-pthread libopenblas-dev libgomp1 ca-certificates && rm -rf /var/lib/apt/lists/*
 # oneMKL for BLAS comparisons, x86_64 only: Intel's redistributable runtime, registered with ld.so (/opt/intel/oneapi/redist/lib).
+# Intel's signing keys are pinned by the file's SHA-256: a changed key file fails the build rather than being trusted.
 RUN if [ "$(dpkg --print-architecture)" = amd64 ]; then \
       apt-get update && apt-get install -y --no-install-recommends curl gpg \
-      && curl -fsSL https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor -o /usr/share/keyrings/intel-oneapi.gpg \
+      && curl -fsSL -o /tmp/intel.pub https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+      && echo "db932ba032a71f732dc415eef5f4f185fc7ae768487d7a357bc2772746b6c48c  /tmp/intel.pub" | sha256sum -c - \
+      && gpg --dearmor -o /usr/share/keyrings/intel-oneapi.gpg /tmp/intel.pub && rm /tmp/intel.pub \
       && echo "deb [signed-by=/usr/share/keyrings/intel-oneapi.gpg] https://apt.repos.intel.com/oneapi all main" > /etc/apt/sources.list.d/oneapi.list \
       && apt-get update && apt-get install -y --no-install-recommends intel-oneapi-runtime-mkl=2026.2.0-881 \
       && apt-get purge -y --auto-remove curl gpg && rm -rf /var/lib/apt/lists/* \

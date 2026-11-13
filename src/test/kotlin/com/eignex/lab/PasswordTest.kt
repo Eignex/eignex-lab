@@ -115,6 +115,11 @@ class PasswordTest {
                 header(HttpHeaders.Authorization, basic("", "secret"))
                 header(HttpHeaders.Origin, "https://evil.example")
             }.status)
+            for (authorization in listOf(null, basic("", "secret"))) {
+                val page = client.get("/") { authorization?.let { header(HttpHeaders.Authorization, it) }; header(HttpHeaders.Accept, "text/html") }
+                assertEquals("DENY", page.headers["X-Frame-Options"], "no other site may frame a page")
+                assertEquals("frame-ancestors 'none'", page.headers["Content-Security-Policy"])
+            }
             assertEquals(HttpStatusCode.OK, client.get("/") {
                 header(HttpHeaders.Authorization, basic("", "secret"))
                 header(HttpHeaders.Accept, "text/html")

@@ -214,4 +214,4 @@ UNIT
   loginctl enable-linger "$(id -un)"   # start at boot without a login session
   ;;
 esac
-echo "api on http://$(hostname):$(lab_port)/"
+echo "api on http://127.0.0.1:$(lab_port)/ (LAB_HOST in lab.env opens it beyond this machine)"

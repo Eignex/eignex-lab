@@ -353,15 +353,18 @@ private class WorkerAuthConfig {
     lateinit var backend: NomadBackend
 }
 
+/** Registration's own path, matched whole: a suffix match would exempt any route whose last segment is `register`. */
+private val REGISTER_PATH = Regex("/worker/v1/sessions/[^/]+/register")
+
 /**
  * Authenticates every call under a worker session's route before its handler runs, and keeps the session for it
- * ([session]): a route added there is authenticated whether or not it asks. Registration alone is exempt, by name: it
- * presents the credentials the session is then bound to.
+ * ([session]): a route added there is authenticated whether or not it asks. Registration alone is exempt, by its whole
+ * path and method ([REGISTER_PATH]): it presents the credentials the session is then bound to.
  */
 private val WorkerAuth = createRouteScopedPlugin("WorkerAuth", ::WorkerAuthConfig) {
     val backend = pluginConfig.backend
     onCall { call ->
-        if (call.request.path().endsWith("/register")) return@onCall
+        if (call.request.httpMethod == HttpMethod.Post && REGISTER_PATH.matches(call.request.path())) return@onCall
         val c = call.credentials()
         call.attributes.put(SESSION, withContext(CoordinatorIo.control) { backend.authenticate(c.session, c.token, c.allocation, c.identity) })
     }

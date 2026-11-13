@@ -86,7 +86,7 @@ data class Health(
 )
 
 fun serveApi(config: Config, store: Store, host: HostReport) {
-    embeddedServer(Netty, port = config.port) { api(config, store, host) }.start(wait = true)
+    embeddedServer(Netty, port = config.port, host = config.host) { api(config, store, host) }.start(wait = true)
 }
 
 /**
@@ -101,6 +101,7 @@ internal fun Application.api(services: ApiServices) {
     val config = services.config
     monitor.subscribe(ApplicationStopped) { services.close() }
     install(ContentNegotiation) { json() }
+    installNoFraming()
     installPassword(config)
     installApiErrors()
     services.start()
@@ -116,6 +117,17 @@ internal fun Application.api(services: ApiServices) {
         capacityRoutes(services)
     }
 }
+
+/**
+ * No page may be framed by another site: a framed page's own buttons send same-origin requests the cross-site check
+ * ([sameSite]) lets through, so a page that hid it under its own could click them with the viewer's password.
+ */
+private fun Application.installNoFraming() = install(createApplicationPlugin("NoFraming") {
+    onCall { call ->
+        call.response.headers.append("X-Frame-Options", "DENY")
+        call.response.headers.append("Content-Security-Policy", "frame-ancestors 'none'")
+    }
+})
 
 /**
  * Every page and call needs the password, as HTTP Basic with any user name; browsers ask for it once and resend it.
