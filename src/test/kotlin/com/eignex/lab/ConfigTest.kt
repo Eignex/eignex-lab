@@ -28,6 +28,8 @@ class ConfigTest {
         assertEquals(Defaults.MAX_PARALLEL, config.maxParallel)
         assertEquals(Defaults.MIN_FREE_GB * BYTES_PER_GB, config.trimCriticalFreeBytes)
         assertEquals(data.resolve("nomad/native.lock"), config.nativeExecutionLock)
+        assertEquals("127.0.0.1", config.host, "the API stays behind the proxy unless LAB_HOST opens it")
+        assertEquals("0.0.0.0", Config.fromEnv(mapOf("LAB_DATA" to data.toString(), "LAB_HOST" to "0.0.0.0")).host)
         // The defaults a test's Config gets are the same ones; only what belongs to a process, its probes, differs.
         assertEquals(Config(dataDir = data).copy(auth = config.auth, requireDocker = true, cores = config.cores,
             volumeAccess = config.volumeAccess), config)

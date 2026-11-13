@@ -31,6 +31,9 @@ data class Config(
     /** Benchmark instances, rsynced from the dev PC; the bench's own default cache location. */
     val corpusDir: Path = Path("${System.getProperty("user.home")}/.cache/eignex-lab/corpus"),
     val port: Int = Defaults.PORT,
+    /** The address the API listens on: loopback, behind the proxy, unless `LAB_HOST` opens it (`0.0.0.0` for every
+     *  interface), which sends the password over plain HTTP to whoever can reach the port. */
+    val host: String = Defaults.HOST,
     /** JVM flags for lab-owned reference solver processes. */
     val solveJavaOpts: String = Defaults.SOLVE_JAVA_OPTS,
     /** The most cases one native worker session runs at once, whatever vCPUs its job has: each holds its own solve
@@ -169,6 +172,7 @@ data class Config(
                 launcher = read.string("LAB_LAUNCHER", "$dataDir/releases/current/bin/eignex-lab"),
                 corpusDir = read.path("LAB_CORPUS", Path("${System.getProperty("user.home")}/.cache/eignex-lab/corpus")),
                 port = read.int("LAB_PORT", Defaults.PORT, 1..65535),
+                host = read.string("LAB_HOST", Defaults.HOST),
                 solveJavaOpts = read.string("LAB_SOLVE_JAVA_OPTS", Defaults.SOLVE_JAVA_OPTS),
                 maxParallel = maxParallel,
                 defaultParallel = read.int("LAB_DEFAULT_PARALLEL", Defaults.DEFAULT_PARALLEL.coerceAtMost(maxParallel), 1..maxParallel.coerceAtLeast(1)),
@@ -311,6 +315,7 @@ data class DiskPolicy(
 /** The defaults of [Config]'s settings, one place for each: what a setting is when its variable is not set. */
 object Defaults {
     const val PORT = 8420
+    const val HOST = "127.0.0.1"
     const val SOLVE_JAVA_OPTS = "-Xmx3g -XX:+UseSerialGC"
     const val MAX_PARALLEL = 6
     const val DEFAULT_PARALLEL = 4

@@ -21,6 +21,8 @@ sudo -u "$user" mkdir -p "$dir" "$home/eignex-lab-data/logs"
 sudo -u "$user" tee "$dir/Caddyfile" >/dev/null <<CADDY
 $domain {
 	encode gzip
+	# Browsers then go straight to https, so a first http:// visit cannot be downgraded to read the Basic password.
+	header Strict-Transport-Security "max-age=31536000"
 	handle /worker/v1/* {
 		reverse_proxy 127.0.0.1:8091
 	}

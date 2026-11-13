@@ -23,7 +23,8 @@ eignexBuild {
 }
 
 repositories {
-    maven("https://central.sonatype.com/repository/maven-snapshots/") { mavenContent { snapshotsOnly() } }
+    // Eignex snapshots only: no other group may resolve from this repository.
+    maven("https://central.sonatype.com/repository/maven-snapshots/") { mavenContent { snapshotsOnly(); includeGroup("com.eignex") } }
 }
 
 val ktor = "3.2.3"
