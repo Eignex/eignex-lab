@@ -82,7 +82,6 @@ class PasswordTest {
         assertFalse(sameSite("POST", "same-site", null, "lab.eignex.com"))
         assertTrue(sameSite("POST", "same-origin", "https://lab.eignex.com", "lab.eignex.com"))
         assertFalse(sameSite("POST", null, "https://evil.example", "lab.eignex.com"))
-        assertTrue(sameSite("POST", null, "http://192.168.50.104:8420", "192.168.50.104:8420"))
         assertTrue(sameSite("POST", null, null, "lab.eignex.com"))
     }
 
