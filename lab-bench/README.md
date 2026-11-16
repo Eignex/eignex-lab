@@ -11,8 +11,8 @@ adapter or shell script. The SDK does not replace JMH or time a callback on the 
 
 ## Import
 
-Releases use public GitHub Release assets; consuming builds need no GitHub login or token. This module's initial
-release version is `0.1.0`; it must be published before the remote dependency below resolves.
+Releases use public GitHub Release assets; consuming builds need no GitHub login or token. Version `0.1.1`
+includes the shared workspace checksum cache and must be published before consumers of that API resolve it.
 
 Add this repository to the consuming bench module's `build.gradle.kts`:
 
@@ -39,7 +39,7 @@ For a JVM module:
 
 ```kotlin
 dependencies {
-    implementation("com.eignex:lab-bench:0.1.0")
+    implementation("com.eignex:lab-bench:0.1.1")
 }
 ```
 
@@ -49,7 +49,7 @@ For a multiplatform module:
 kotlin {
     sourceSets {
         jvmMain.dependencies {
-            implementation("com.eignex:lab-bench:0.1.0")
+            implementation("com.eignex:lab-bench:0.1.1")
         }
     }
 }
@@ -66,6 +66,15 @@ includeBuild("../eignex-lab") {
     }
 }
 ```
+
+## Workspace checksums
+
+`WorkspaceChecksums(root).use { checksums -> checksums.checksum(file) }` computes SHA-256 checksums and
+optionally reuses them across case JVMs through `LAB_WORKSPACE_CACHE`. Pass an explicit cache directory for
+local captures, or null to disable persistence. Callers still enumerate their inputs for each capture and own
+their fingerprint formats and provenance records. The SDK owns the bounded cache format, file stamps and
+writer coordination. Missing or corrupt cache storage falls back to hashing; input read failures still fail.
+`canonicalChecksum(path)` accepts a real path the caller has already resolved.
 
 ## Implement a suite
 
@@ -238,12 +247,12 @@ invalid/missing SDK results and supervisor timeouts still retain all files under
 Stage the unpublished SDK using the same metadata and URL layout as a public release:
 
 ```sh
-./gradlew :lab-bench:stageAdapterRepository -PbenchVersion=0.1.0
+./gradlew :lab-bench:stageAdapterRepository -PbenchVersion=0.1.1
 ```
 
 The consumer bench modules accept
 `-PlabBenchRepository=file:///absolute/eignex-lab/lab-bench/build/adapter-repository`
-and `-PlabBenchVersion=0.1.0`. Build the tasks declared in each consumer's committed manifest with those properties.
+and `-PlabBenchVersion=0.1.1`. Build the tasks declared in each consumer's committed manifest with those properties.
 Their default repository URL resolves public GitHub Release assets anonymously after publication. When restaging
 the same unpublished version, refresh consumer dependencies with `--refresh-dependencies` or select a fresh
 development version so Gradle cannot reuse an earlier SDK artifact.
@@ -289,7 +298,7 @@ The optional manifest `runtime` object declares `java` (the exact Java feature v
 `requiredTags`, `tools` (executable names) and `environment`. Tags constrain preparation and
 execution; Java and tools are checked before entry-point invocation. Environment assignments
 cannot override lab custody variables, PATH, HOME or the Java executable/options. This is lab
-manifest metadata; it does not change the SDK 0.1.0 entry-point or result protocol.
+manifest metadata; it does not change the SDK 0.1.1 entry-point or result protocol.
 
 A repository can explicitly separate the preparation host from its output architecture. For example, a Linux x86-64
 compiler can produce an ARM64 runtime that later executes only on SVE workers:
@@ -375,19 +384,19 @@ rerunning the fetch repairs missing files without rerunning the experiment.
 ## Build and release
 
 ```sh
-./gradlew :lab-bench:check :lab-bench:verifyRelease -PbenchVersion=0.1.0
+./gradlew :lab-bench:check :lab-bench:verifyRelease -PbenchVersion=0.1.1
 ```
 
 KBuild 1.3.6's `com.eignex.publish.github` helper stages the JAR, sources JAR, POM, Gradle Module Metadata and
 `SHA256SUMS` under `lab-bench/build/release-assets/`. `releaseAssets` is an alias for `githubReleaseAssets`.
 The helper is applied independently of KBuild's library conventions so the SDK has no KBuild platform dependency.
-The SDK version is independent of the service version; local builds default to `0.1.0-SNAPSHOT`.
+The SDK version is independent of the service version; local builds default to `0.1.1-SNAPSHOT`.
 `verifyRelease` serves these files using the exact release URL layout and compiles/runs an independent consumer
 with a fresh Gradle user home and no credential environment variables. It also checks the dependency boundary
 and Java 17 bytecode, and verifies every staged checksum. The consumer downloads ordinary Kotlin dependencies anonymously from Maven Central.
 
 The `release-bench` workflow validates and publishes assets for tags named `lab-bench-v<version>`, such as
-`lab-bench-v0.1.0`. The workflow uploads KBuild's staged assets with `gh release create --latest=false` so an SDK
+`lab-bench-v0.1.1`. The workflow uploads KBuild's staged assets with `gh release create --latest=false` so an SDK
 release does not replace the service's latest-release channel; KBuild's upload task does not expose that flag.
 Only publication uses GitHub credentials. Published versions must keep their asset names and
 contents unchanged; consumers pin an exact SDK version. This change does not publish a release by itself.

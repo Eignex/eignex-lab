@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.eignex"
-version = providers.gradleProperty("benchVersion").getOrElse("0.1.0-SNAPSHOT")
+version = providers.gradleProperty("benchVersion").getOrElse("0.1.1-SNAPSHOT")
 require(Regex("[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?").matches(version.toString())) {
     "benchVersion must be a version such as 0.1.0, 0.1.0-rc.1 or 0.1.0-SNAPSHOT"
 }

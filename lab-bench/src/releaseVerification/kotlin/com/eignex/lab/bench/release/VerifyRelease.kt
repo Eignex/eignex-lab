@@ -226,8 +226,19 @@ public class Consumer {
         }
         public BenchResult run(BenchCase workload, BenchContext context) {
             if (workload.getParameters().containsKey("fail")) throw new IllegalStateException("expected fixture failure");
-            try { Files.writeString(context.getOutputDirectory().resolve("capture.txt"), "retained"); }
-            catch (java.io.IOException failure) { throw new RuntimeException(failure); }
+            try {
+                Path capture = Files.writeString(context.getOutputDirectory().resolve("capture.txt"), "retained");
+                String expected = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest("retained".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                try (WorkspaceChecksums checksums = new WorkspaceChecksums(context.getOutputDirectory(), null)) {
+                    if (!checksums.checksum(capture).equals(expected)) throw new AssertionError("file checksum");
+                    if (!checksums.canonicalChecksum(capture.toRealPath()).equals(expected)) {
+                        throw new AssertionError("canonical checksum");
+                    }
+                }
+            } catch (java.io.IOException | java.security.NoSuchAlgorithmException failure) {
+                throw new RuntimeException(failure);
+            }
             return new BenchResult(workload.getId(), BenchStatus.SUCCESS,
                 List.of(new BenchMetric("fixture", 42.0, "count", MetricDirection.NONE)),
                 List.of(context.artifact("capture.txt", "text/plain", "Fixture capture")), null, null, 1);
