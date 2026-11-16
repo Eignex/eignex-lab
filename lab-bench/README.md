@@ -268,7 +268,7 @@ Provide a JSON scenario matrix for the opt-in local worker/coordinator gate. Eac
 ```
 
 ```sh
-LAB_BENCH_ADAPTER_MATRIX=/absolute/scenarios.json ./gradlew verifyBenchAdapters
+LAB_BENCH_ADAPTER_MATRIX=/absolute/scenarios.json ./gradlew :lab-app:verifyBenchAdapters
 ```
 
 The test stages the declared prepared outputs, calls each manifest planner, relocates frozen

@@ -153,7 +153,7 @@ These identities include the adapter policy and fixed solver options. Identity l
 spends the case allowance before solving. Historical rows without an identity remain unqualified for
 comparisons on captured sources; rerun them with updated workers to obtain qualified reference rows.
 For a focused reference receipt, the committed `com.eignex.lab.cli.MainKt reference` entry point accepts `OUT` from
-the lab when `out=` is omitted. `src/test/resources/reference/affine-objective.mzn` is its deterministic source
+the lab when `out=` is omitted. `lab-solvers/src/test/resources/reference/affine-objective.mzn` is its deterministic source
 control; an instrumented capture establishes adapter consumption, not throughput or independent checking.
 
 **Auto placement is preferred and is the default for ordinary experiments, profiles and bench-adapter runs.**
@@ -194,7 +194,7 @@ capped at two hours; `--timeout` uses seconds. Scripts own their instrumentation
 
 ```sh
 deploy/lab profile --repo Eignex/eignex-lab --build installDist \
-  --classpath 'build/install/eignex-lab/lib/*' --timeout 600 \
+  --classpath 'lab-app/build/install/eignex-lab/lib/*' --timeout 600 \
   com.eignex.lab.cli.MainKt main "Startup capture" -- check
 ```
 
@@ -505,8 +505,8 @@ metadata and actual jar hashes identify the API; the existing XCSP checker depen
 The wrapper runs in a bounded child JVM, with its executable and complete classpath jar hashes in the receipt.
 Its Kotlin source delegates all constraint evaluation to the provider's API.
 
-Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
-[API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).
+Schemas and behavior: [experiments](../lab-app/src/main/kotlin/com/eignex/lab/domain/Experiments.kt),
+[API](../lab-app/src/main/kotlin/com/eignex/lab/web/Api.kt), [checkers](../lab-solvers/src/main/kotlin/com/eignex/lab/checker/).
 
 OPB (including WBO sources), WBO and WCNF retained points use the independent lab evaluator
 `eignex-lab-weighted-point-1`. It reads the original source, checks every original Boolean coordinate and hard
@@ -605,7 +605,7 @@ Skipped and pending cases are never labeled incorrect. `lab trend <schedule-name
 points as JSON. Renaming a schedule preserves its job history. Benchmark cache format 6 refreshes the
 engine attribution and workload controls without invalidating solver points.
 
-For local graph-model coverage, run `node --test src/test/js/benchmark-history.test.cjs`.
+For local graph-model coverage, run `node --test lab-app/src/test/js/benchmark-history.test.cjs`.
 
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,
 processor/memory/deadline controls and normalized runtime/compiler identities.

@@ -1,0 +1,162 @@
+package com.eignex.lab
+
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
+import kotlinx.serialization.json.Json
+import java.nio.file.Files
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
+import kotlin.test.assertContains
+
+class PlacementTest {
+    private val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d")
+
+    private fun config(cloud: Boolean = true): Config {
+        val dir = Files.createTempDirectory("lab")
+        val queue = dir.resolve("queue.json")
+        if (cloud) queue.toFile().writeText(java.io.File(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json").readText().replace("6000", "16000").replace("\"logicalCpus\": 8", "\"logicalCpus\": 16"))
+        return Config(dataDir = dir, cores = 8, maxParallel = 6, nomadQueueSettings = queue.takeIf { cloud })
+    }
+
+    @Test
+    fun `schedules confirmations and reference runs stay local while Nomad handles exact lists and deadlines`() {
+        val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
+        val bounded = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", runTimeoutSec = 60, classpath = listOf("tools/lib/*")))
+
+        assertEquals(listOf(true, true, true, false, false, false), listOf(
+            Placement.localOnly(spec, "status-sweep@abc123"),
+            Placement.localOnly(spec, "e${Confirm.SUFFIX}"),
+            Placement.localOnly(reference, "r"),
+            Placement.localOnly(spec.copy(problemList = listOf(Problem("s", "p"))), "e"),
+            Placement.localOnly(bounded, "p"),
+            Placement.localOnly(spec, "e"),
+        ))
+    }
+
+    @Test
+    fun `bench confirmations preserve compatible placement rather than forcing native execution`() {
+        val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json"), host = Experiments.AWS_HOST,
+            nodeTags = NodeSelector(require = setOf("platform:linux")))
+        val name = Confirm.name("bench", "a".repeat(40), 1)
+        for (host in listOf(Experiments.AUTO_HOST, Experiments.AWS_HOST)) {
+            assertFalse(Placement.localOnly(spec.copy(host = host), name))
+        }
+        val targets = config().nomadQueue!!.matching(spec, name)
+        assertTrue(targets.isNotEmpty() && targets.all { it.os == "linux" })
+        assertTrue(Placement.localOnly(spec.copy(host = Experiments.LAB_HOST), name))
+        assertTrue(Placement.localOnly(spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "z3")), name))
+    }
+
+    @Test
+    fun `a submitted host is not followed, and a profile job goes local first too`() {
+        val config = config()
+        val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", classpath = listOf("tools/lib/*")))
+
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.LAB_HOST), "e", config.workers))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST), "e", config.workers))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(profile, "p", config.workers))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "e", config(cloud = false).workers) }
+    }
+
+    @Test
+    fun `ordinary jobs cannot force local through node selectors or a missing cloud match`() {
+        val config = config()
+        for (selector in listOf(NodeSelector(require = setOf("local")), NodeSelector(exclude = setOf("cloud")),
+            NodeSelector(require = setOf("arch:arm64")))) {
+            val failure = assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = selector), spec.name, config.workers) }
+            assertContains(failure.message!!, Placement.LOCAL_RESERVED)
+        }
+        val pinned = spec.copy(nodeTags = NodeSelector(require = setOf("local")))
+        assertEquals(Experiments.LAB_HOST, Placement.host(pinned, "status-sweep@abc", config.workers))
+        assertEquals(Experiments.LAB_HOST, Placement.host(pinned.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), "reference", config.workers))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(pinned.copy(nodeTags = null), spec.name, config.workers))
+    }
+
+    @Test
+    fun `cores and vcpus over the local machine's are cut down to it, so such a job goes local first like any other`() {
+        val config = config()
+        val big = spec.copy(base = mapOf("processors" to "12"), vcpus = 12)
+        val grid = spec.copy(configs = listOf(mapOf("label" to "a"), mapOf("label" to "b", "processors" to "20")),
+            grid = mapOf("processors" to listOf("4", "12", "16")))
+
+        val capped = Experiments.capToLocal(big, config.cores)
+        val gridCapped = Experiments.capToLocal(grid, config.cores)
+
+        assertEquals(listOf("8", 8), listOf(capped.base["processors"], capped.vcpus))
+        assertEquals(listOf("vcpus=12 was asked, capped at the local machine's 8 cores", "processors=12 was asked, capped at the local machine's 8 cores"), capped.capped)
+        assertEquals(spec.copy(vcpus = 8), Experiments.capToLocal(spec.copy(vcpus = 8), config.cores))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(capped, "e", config.workers))
+        assertEquals(listOf("4", "8"), gridCapped.grid["processors"])
+        assertEquals(8, Experiments.arms(gridCapped).maxOf { it.cores })
+        assertEquals(spec, Experiments.capToLocal(spec, config.cores))
+        assertEquals(Experiments.fingerprint(capped), Experiments.fingerprint(capped.copy(capped = emptyList())))
+    }
+
+    private fun committed(file: String) = ExperimentSpec(file.removeSuffix(".json"), host = Experiments.AUTO_HOST, bench = BenchSpec("bench.json"))
+
+    @Test
+    fun `a schedule that opts in to the cloud places its runs local or cloud, and its confirmations local`() {
+        val config = config()
+        val store = Store(config.database)
+        store.schedules.create("ref", "main", spec.copy(name = "ref", host = Experiments.AUTO_HOST), 3600)
+        store.schedules.create("aliased", "main", spec.copy(name = "aliased", host = HostPlacement.CLOUD), 3600)
+        store.schedules.create("status-sweep", "main", spec.copy(name = "status-sweep"), 3600)
+        store.schedules.create("pinned", "main", spec.copy(name = "pinned", host = HostPlacement.LOCAL), 3600)
+        store.schedules.create("refs", "main", spec.copy(name = "refs", host = Experiments.AUTO_HOST,
+            base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), 3600)
+        val schedules = store.schedules.all()
+        val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
+
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "ref@abc123", config.workers, schedules))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "aliased@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "status-sweep@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "pinned@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(reference, "refs@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, Confirm.name("ref", "abc123", 7), config.workers, schedules))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(problemList = listOf(Problem("s", "p"))), "ref@abc123", config.workers, schedules))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "ref@abc123", config(cloud = false).workers, schedules) }
+        // A submitted job is placed without the schedules: a name alone does not take it off the local machine.
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config.workers))
+    }
+
+    @Test
+    fun `where a run goes is not what it measures, so an old local run matches a new one that may go to the cloud`() {
+        val stored = Json.decodeFromString<ExperimentSpec>(
+            """{"name": "ref@abc", "problems": [{"suite": "s"}], "base": {"ref": "abc"}, "host": "lab", "description": "d"}""")
+        val taken = stored.copy(name = "ref@def", base = mapOf("ref" to "def"), host = Experiments.AWS_HOST)
+        val opted = committed("klause-reference.json")
+
+        assertEquals(Experiments.fingerprint(stored), Experiments.fingerprint(stored.copy(host = Experiments.AUTO_HOST)))
+        assertEquals(Experiments.fingerprint(stored), Experiments.fingerprint(taken))
+        assertEquals(Experiments.trendFingerprint(stored), Experiments.trendFingerprint(taken))
+        assertEquals(Experiments.fingerprint(stored, listOf(Problem("s", "p"))), Experiments.fingerprint(taken, listOf(Problem("s", "p"))))
+        assertEquals(Experiments.trendFingerprint(opted), Experiments.trendFingerprint(opted.copy(host = Experiments.LAB_HOST)))
+    }
+
+    @Test
+    fun `a reschedule that changes only the host is saved without queueing an extra run`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val local = committed("klause-reference.json").copy(host = Experiments.LAB_HOST)
+        val id = store.schedules.create("klause-reference", "main", local, 86400)
+        store.schedules.ran(id, "abc", 1)
+
+        store.schedules.update(id, committed("klause-reference.json"), intervalSec = null)
+
+        val schedule = store.schedules.all().single()
+        assertEquals("abc", schedule.lastSha)
+        assertTrue(Placement.cloudOptIn(schedule.experiment))
+    }
+
+}

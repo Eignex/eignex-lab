@@ -24,7 +24,7 @@ fi
 # avoids the overlap altogether.
 background=(nice -n 19); [[ "$(uname)" == Darwin ]] && background=(taskpolicy -b)
 (cd "$here" && "${background[@]}" ./gradlew --no-daemon clean installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
-JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
+JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q :lab-app:printJavaHome)}"
 export JAVA_HOME
 bin="$(release "$here" "$LAB_DATA")"
 "$bin" check

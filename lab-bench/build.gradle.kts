@@ -13,8 +13,6 @@ require(Regex("[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?")
     "benchVersion must be a version such as 0.1.0, 0.1.0-rc.1 or 0.1.0-SNAPSHOT"
 }
 
-repositories { mavenCentral() }
-
 kotlin {
     jvmToolchain(25)
     explicitApi()
@@ -28,10 +26,10 @@ java {
 }
 
 dependencies {
-    api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-    testImplementation(platform("org.junit:junit-bom:5.13.3"))
+    api(libs.serialization.json)
+    testImplementation(platform(libs.junit.bom))
     testImplementation(kotlin("test-junit5"))
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testRuntimeOnly(libs.junit.launcher)
 }
 
 tasks.test { useJUnitPlatform() }
@@ -71,7 +69,7 @@ tasks.register("releaseAssets") {
 val releaseVerification: SourceSet = sourceSets.create("releaseVerification")
 
 dependencies {
-    "releaseVerificationImplementation"("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    "releaseVerificationImplementation"(libs.serialization.json)
 }
 
 tasks.register<JavaExec>("verifyRelease") {

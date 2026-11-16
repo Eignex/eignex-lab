@@ -39,7 +39,7 @@ install() {
   printf '#!/bin/bash\nif [[ "$*" == *printJavaHome* ]]; then echo /test-jdk; else [[ "$*" == *"clean installDist"* ]] || exit 1; fi\n' \
     > "$project/gradlew"
   chmod 755 "$project/gradlew"
-  launcher="$project/build/install/eignex-lab/bin/eignex-lab"
+  launcher="$project/lab-app/build/install/eignex-lab/bin/eignex-lab"
   mkdir -p "$(dirname "$launcher")"
   printf '#!/bin/bash\nprintf "checked data: %%s\\n" "$LAB_DATA"\n' > "$launcher"
   chmod 755 "$launcher"
@@ -86,8 +86,8 @@ test_queue_settings_retain_immutable_releases_even_without_native_service_files(
   local project="$root/checkout" data="$root/data" index release
   check "creates a repository" git init -q "$project"
   check "commits" git -C "$project" -c user.name=Fixture -c user.email=fixture@example.com commit --allow-empty -qm "test: fixture"
-  mkdir -p "$project/build/install/eignex-lab/bin"
-  printf fixture > "$project/build/install/eignex-lab/bin/eignex-lab"
+  mkdir -p "$project/lab-app/build/install/eignex-lab/bin"
+  printf fixture > "$project/lab-app/build/install/eignex-lab/bin/eignex-lab"
   for index in 0 1 2 3; do
     mkdir -p "$data/releases/previous-$index"
     TZ=UTC touch -t "20000101000$index" "$data/releases/previous-$index"

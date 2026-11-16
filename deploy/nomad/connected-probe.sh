@@ -4,7 +4,7 @@
 # connected-probe.sh
 #
 # Starts a sandbox (sandbox.sh) in build/nomad-connected on ports 14676-14678 and a loopback OCI registry, builds and
-# pushes the worker image from a context that lost its executable bits, and runs `gradlew :verifyConnectedNomad`
+# pushes the worker image from a context that lost its executable bits, and runs `gradlew :lab-app:verifyConnectedNomad`
 # against them. Stops both again however it ends. Needs Docker, curl, jq, unzip and openssl.
 # shellcheck disable=SC1091,SC2154 # sandbox.sh, checked on its own, sets root and state
 set -o pipefail
@@ -56,7 +56,7 @@ main() {
     -out "$state/client.p12" -passout "file:$password" > /dev/null || exit 1
   trust="$state/trust.p12"
   rm -f "$trust"
-  java_home="$(cd "$root" && run ./gradlew -q printJavaHome)" || exit 1
+  java_home="$(cd "$root" && run ./gradlew -q :lab-app:printJavaHome)" || exit 1
   run "$java_home/bin/keytool" -importcert -noprompt -alias nomad -file "$state/nomad-agent-ca.pem" \
     -keystore "$trust" -storetype PKCS12 -storepass:file "$password" > /dev/null || exit 1
   chmod 600 "$trust" "$state/client.p12"
@@ -67,12 +67,12 @@ main() {
   (cd "$root" && ./gradlew installDist) || fail "installDist failed"
   # Simulate an archive/build context that lost executable bits, including the packaged JVM launcher.
   context="$(mktemp -d "$state/image-context-XXXXXX")" || fail "cannot create an image context"
-  { mkdir -p "$context/build/install" && cp -R "$root/build/install/eignex-lab" "$context/build/install/"; } ||
+  { mkdir -p "$context/lab-app/build/install" && cp -R "$root/lab-app/build/install/eignex-lab" "$context/lab-app/build/install/"; } ||
     fail "cannot copy the installed distribution"
   for name in deploy/nomad/worker.Dockerfile deploy/nomad/worker-entrypoint.sh; do
     { mkdir -p "$(dirname "$context/$name")" && cp "$root/$name" "$context/$name"; } || fail "cannot copy $name"
   done
-  chmod 644 "$context/build/install/eignex-lab/bin/eignex-lab" "$context/deploy/nomad/worker-entrypoint.sh"
+  chmod 644 "$context/lab-app/build/install/eignex-lab/bin/eignex-lab" "$context/deploy/nomad/worker-entrypoint.sh"
   docker build -f "$context/deploy/nomad/worker.Dockerfile" --build-arg WORKER_RELEASE=connected-probe -t "$image" \
     "$context" || fail "cannot build the worker image"
   rm -rf "$context"
@@ -91,7 +91,7 @@ main() {
         LAB_NOMAD_TEST_IMAGE="$digest" LAB_NOMAD_TEST_API_PORT=18091 \
         LAB_NOMAD_TEST_MHZ="$(jq -r '.Attributes["cpu.usablecompute"]' <<< "$node")" \
         LAB_NOMAD_TEST_CPUS="$(jq -r .NodeResources.Cpu.TotalCpuCores <<< "$node")" \
-        bounded 600 ./gradlew :verifyConnectedNomad
+        bounded 600 ./gradlew :lab-app:verifyConnectedNomad
   ) || fail "the connected Nomad verification failed"
   succeeded=1
   echo "Connected Nomad worker, signed identity, hard limits, paired commit and restart checks passed."
