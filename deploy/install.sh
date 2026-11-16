@@ -77,7 +77,7 @@ echo "docker: $docker_mode"
 command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any JDK 17+ so Gradle can launch"; exit 1; }
 # Clear generated launchers from previous project names before packaging the distribution.
 (cd "$here" && ./gradlew clean installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
-JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
+JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q :lab-app:printJavaHome)}"
 export JAVA_HOME
 echo "services run on $JAVA_HOME"
 # macOS keeps a daemon off a removable volume until the binary it runs has Full Disk Access, and leaves its calls there
@@ -89,7 +89,7 @@ if [[ -n "$external" && "$os" == Darwin ]]; then
   echo "  in System Settings → Privacy & Security → Full Disk Access: click +, press Cmd-Shift-G, paste the path above," >&2
   echo "  click Open and switch it on. Do it again whenever the JDK above changes." >&2
 fi
-if [[ -n "$dry" ]]; then bin="$here/build/install/eignex-lab/bin/eignex-lab"; else bin="$(release "$here" "$LAB_DATA")"; fi
+if [[ -n "$dry" ]]; then bin="$here/lab-app/build/install/eignex-lab/bin/eignex-lab"; else bin="$(release "$here" "$LAB_DATA")"; fi
 "$bin" check   # fails here, before anything is registered, on a host without SIMD
 
 # lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an

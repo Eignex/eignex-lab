@@ -442,7 +442,7 @@ usage() {
 main() {
   local state_dir="$root/build/nomad-prototype" action
   port=14646
-  lab="$root/build/install/eignex-lab/bin/eignex-lab"
+  lab="$root/lab-app/build/install/eignex-lab/bin/eignex-lab"
   image="$(hashicorp_pin probe_image)" || exit 1
   while (($# > 0)); do
     case "$1" in

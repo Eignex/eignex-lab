@@ -28,4 +28,31 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
-include("xcsp3-tools", "lab-bench", "lab-model", "lab-solvers", "lab-capacity")
+include("lab-app", "lab-bench", "lab-capacity", "lab-model", "lab-solvers", "xcsp3-tools")
+
+// All modules resolve the same dependency repositories, including KBuild's anonymous platform assets.
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        mavenCentral()
+        maven("https://central.sonatype.com/repository/maven-snapshots/") {
+            mavenContent { snapshotsOnly(); includeGroup("com.eignex") }
+        }
+        ivy {
+            url = uri("https://github.com/Eignex/kbuild/releases/download")
+            patternLayout { artifact("v[revision]/[artifact]-[revision](-[classifier]).[ext]") }
+            metadataSources { gradleMetadata() }
+            content { includeModule("com.eignex", "kbuild-platform") }
+        }
+        exclusiveContent {
+            forRepository {
+                ivy {
+                    url = uri("https://codeload.github.com/xcsp3team/XCSP3-Java-Tools")
+                    patternLayout { artifact("tar.gz/[revision]") }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeModule("org.xcsp", "xcsp3-tools-sources") }
+        }
+    }
+}

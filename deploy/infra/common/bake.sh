@@ -19,7 +19,7 @@ install -d -m 755 /opt/eignex-lab
 rm -rf /opt/eignex-lab/host-venv /opt/eignex-lab/host-python.lock /opt/eignex-lab/*.py
 install -m 755 "$root"/deploy/infra/common/{bootstrap,interruption}.sh "$root/deploy/infra/aws/bootstrap-aws.sh" \
   "$root/deploy/infra/gcp/bootstrap-gcp.sh" /opt/eignex-lab/
-install -m 755 "$root/src/main/resources/node-capabilities.sh" /opt/eignex-lab/
+install -m 755 "$root/lab-app/src/main/resources/node-capabilities.sh" /opt/eignex-lab/
 install -m 644 "$root"/deploy/infra/common/*.service "$root"/deploy/infra/common/*.timer /etc/systemd/system/
 docker pull "$LAB_WORKER_IMAGE"
 timeout 30s docker run --rm --network none "$LAB_WORKER_IMAGE" --smoke-test

@@ -9,8 +9,6 @@ plugins {
     `java-library`
 }
 
-repositories { mavenCentral() }
-
 kotlin {
     jvmToolchain(25)
     compilerOptions.jvmTarget.set(JvmTarget.JVM_21)
@@ -22,14 +20,14 @@ java {
 }
 
 dependencies {
-    api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    api(libs.serialization.json)
     // The runtimes provide both; the AWS interface is packaged with the function, as AWS expects.
-    implementation("com.amazonaws:aws-lambda-java-core:1.2.3")
-    compileOnly("com.google.cloud.functions:functions-framework-api:1.1.4")
-    testImplementation("com.google.cloud.functions:functions-framework-api:1.1.4")
-    testImplementation(platform("org.junit:junit-bom:5.13.3"))
+    implementation(libs.aws.lambda)
+    compileOnly(libs.gcp.functions)
+    testImplementation(libs.gcp.functions)
+    testImplementation(platform(libs.junit.bom))
     testImplementation(kotlin("test-junit5"))
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testRuntimeOnly(libs.junit.launcher)
 }
 
 tasks.test { useJUnitPlatform() }

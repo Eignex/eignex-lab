@@ -6,8 +6,6 @@ plugins {
     `java-library`
 }
 
-repositories { mavenCentral() }
-
 kotlin { jvmToolchain(25) }
 
 dependencies {

@@ -194,7 +194,7 @@ capped at two hours; `--timeout` uses seconds. Scripts own their instrumentation
 
 ```sh
 deploy/lab profile --repo Eignex/eignex-lab --build installDist \
-  --classpath 'build/install/eignex-lab/lib/*' --timeout 600 \
+  --classpath 'lab-app/build/install/eignex-lab/lib/*' --timeout 600 \
   com.eignex.lab.cli.MainKt main "Startup capture" -- check
 ```
 

@@ -33,8 +33,8 @@ The Linux client runs in a privileged Docker container with the local Docker soc
 this is a local/CI prototype, not the cloud bootstrap configuration. It uses its own node class and data directory.
 
 ```sh
-./gradlew :test --tests com.eignex.lab.NomadBatchJobTest installDist
-export JAVA_HOME="$(./gradlew -q printJavaHome)"
+./gradlew :lab-app:test --tests com.eignex.lab.NomadBatchJobTest installDist
+export JAVA_HOME="$(./gradlew -q :lab-app:printJavaHome)"
 bash deploy/nomad/sandbox.sh install
 bash deploy/nomad/sandbox.sh start
 bash deploy/nomad/sandbox.sh verify
@@ -91,7 +91,7 @@ Save an operator-owned JSON input with the target pool's actual fingerprinted us
 ```
 
 ```sh
-build/install/eignex-lab/bin/eignex-lab nomad-spec session.json > job.json
+lab-app/build/install/eignex-lab/bin/eignex-lab nomad-spec session.json > job.json
 bash deploy/nomad/sandbox.sh cli job run -json job.json
 ```
 

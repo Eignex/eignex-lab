@@ -9,7 +9,7 @@ Older workers omit these fields and remain accepted. Cache observations are stor
 ## Run the full preparation regression
 
 ```sh
-LAB_PREPARATION_PERF_ROOT=/Volumes/Ros/prepperf ./gradlew :verifyPreparationPerformance
+LAB_PREPARATION_PERF_ROOT=/Volumes/Ros/prepperf ./gradlew :lab-app:verifyPreparationPerformance
 ```
 
 Use a short scratch path on the filesystem being measured (Unix socket paths have a length limit). The test needs 4 GiB free and removes its own fixture/cache directories at completion. `preparation-performance.json` in the selected directory remains as the report. Ordinary `test` excludes this tagged fixture. The dedicated task skips unless `LAB_PREPARATION_PERF_ROOT` is set, including when the build plugin attaches it to `check`; Linux and native macOS CI set that variable for the explicit step and retain the report.

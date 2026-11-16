@@ -7,20 +7,6 @@ val sourceSha256 = "541624efb4ac227d0c99c7058e2e07041ff4f119070b0c996cde539fe71c
 val sourceRoot = "XCSP3-Java-Tools-$revision"
 version = "2.5.1+$revision"
 
-repositories {
-    exclusiveContent {
-        forRepository {
-            ivy {
-                url = uri("https://codeload.github.com/xcsp3team/XCSP3-Java-Tools")
-                patternLayout { artifact("tar.gz/[revision]") }
-                metadataSources { artifact() }
-            }
-        }
-        filter { includeModule("org.xcsp", "xcsp3-tools-sources") }
-    }
-    mavenCentral()
-}
-
 val upstreamSources by configurations.creating {
     isCanBeConsumed = false
     isCanBeResolved = true
@@ -29,7 +15,7 @@ val upstreamSources by configurations.creating {
 
 dependencies {
     upstreamSources("org.xcsp:xcsp3-tools-sources:$revision@tar.gz")
-    implementation("org.glassfish:javax.json:1.1.2")
+    implementation(libs.javax.json)
 }
 
 val unpackSources by tasks.registering(Sync::class) {

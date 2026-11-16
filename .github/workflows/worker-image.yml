@@ -89,12 +89,12 @@ jobs:
         run: |
           set -euo pipefail
           zip=$(ls "$RUNNER_TEMP"/distribution/*.zip); [ "$(ls "$RUNNER_TEMP"/distribution/*.zip | wc -l)" = 1 ]
-          rm -rf build/install && mkdir -p build/install "$RUNNER_TEMP/unpacked"
+          rm -rf lab-app/build/install && mkdir -p lab-app/build/install "$RUNNER_TEMP/unpacked"
           unzip -q "$zip" -d "$RUNNER_TEMP/unpacked"
           [ "$(ls "$RUNNER_TEMP/unpacked" | wc -l)" = 1 ]
-          mv "$RUNNER_TEMP"/unpacked/* build/install/eignex-lab
+          mv "$RUNNER_TEMP"/unpacked/* lab-app/build/install/eignex-lab
           # An image whose launchers lost their exec bits starts and exits 126 on every node.
-          for f in build/install/eignex-lab/bin/eignex-lab deploy/nomad/worker-entrypoint.sh; do
+          for f in lab-app/build/install/eignex-lab/bin/eignex-lab deploy/nomad/worker-entrypoint.sh; do
             test -x "$f" || { echo "$f is not executable"; exit 1; }
           done
       - id: tag

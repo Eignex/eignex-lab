@@ -22,7 +22,7 @@ ARG WORKER_RELEASE
 RUN test -n "$WORKER_RELEASE"
 ENV LAB_WORKER_RELEASE=$WORKER_RELEASE LAB_SUPERVISOR_SOCKET=/local/process.sock LAB_WORKER_LAUNCHER=/opt/lab/bin/eignex-lab
 LABEL org.opencontainers.image.revision=$WORKER_RELEASE
-COPY build/install/eignex-lab/ /opt/lab/
+COPY lab-app/build/install/eignex-lab/ /opt/lab/
 COPY deploy/nomad/worker-entrypoint.sh /opt/lab/worker-entrypoint.sh
 # The process supervisor runs from the launcher and starts every supervised command under /usr/bin/perl.
 RUN chmod 0755 /opt/lab/worker-entrypoint.sh /opt/lab/bin/eignex-lab \

@@ -1,7 +1,7 @@
 {
   "main": "com.eignex.lab.cli.DimacsCheckBenchKt",
-  "buildTasks": ["installDist"],
-  "classpath": ["build/install/eignex-lab/lib/*"],
+  "buildTasks": [":lab-app:installDist"],
+  "classpath": ["lab-app/build/install/eignex-lab/lib/*"],
   "jvmArgs": ["-Xmx256m", "-XX:+UseSerialGC", "-XX:ActiveProcessorCount=1"],
   "runtime": {"java": 25, "requiredTags": ["platform:linux", "arch:x86_64"]}
 }

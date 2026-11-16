@@ -1,0 +1,28 @@
+[versions]
+serialization = "1.11.0"
+junit = "5.13.3"
+ktor = "3.2.3"
+klause = "0.0.1-20261021.091620-860"
+zstd = "1.5.7-24"
+
+[libraries]
+serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-params = { module = "org.junit.jupiter:junit-jupiter-params" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
+ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
+ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ktor-server-status-pages = { module = "io.ktor:ktor-server-status-pages", version.ref = "ktor" }
+ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
+sqlite = { module = "org.xerial:sqlite-jdbc", version = "3.50.3.0" }
+zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
+commons-compress = { module = "org.apache.commons:commons-compress", version = "1.28.0" }
+logback = { module = "ch.qos.logback:logback-classic", version = "1.5.18" }
+klause = { module = "com.eignex:klause-jvm", version.ref = "klause" }
+choco = { module = "org.choco-solver:choco-parsers", version = "5.0.1" }
+slf4j = { module = "org.slf4j:slf4j-api", version = "2.0.17" }
+aws-lambda = { module = "com.amazonaws:aws-lambda-java-core", version = "1.2.3" }
+gcp-functions = { module = "com.google.cloud.functions:functions-framework-api", version = "1.1.4" }
+javax-json = { module = "org.glassfish:javax.json", version = "1.1.2" }

@@ -8,7 +8,7 @@ release() {
   id="$(git -C "$here" rev-parse --short HEAD)-$(date +%Y%m%d%H%M%S)"
   # Explicit returns: this runs inside $(...), where bash 3.2 does not carry set -e.
   mkdir -p "$releases" || return 1
-  cp -R "$here/build/install/eignex-lab" "$releases/$id" || return 1
+  cp -R "$here/lab-app/build/install/eignex-lab" "$releases/$id" || return 1
   # The services report this commit in /health (RunningRelease), so a deploy can be checked without a host shell.
   git -C "$here" rev-parse HEAD > "$releases/$id/COMMIT" || return 1
   ln -sfn "$id" "$releases/current" || return 1
