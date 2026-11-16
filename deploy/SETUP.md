@@ -32,8 +32,9 @@ The client defaults to `https://lab.eignex.com`. Set `LAB_URL` for another API e
 
 ## Public access
 
-The lab Mac serves `lab.eignex.com` itself; nothing runs in the cloud between jobs. The home router (fixed
-address) forwards TCP 80 and 443 to Caddy on the Mac and TCP 4647 to its Nomad server, and the domain's A record
+The normal setup uses a public home IPv4 address, which may be dynamic. The lab Mac serves `lab.eignex.com`
+directly; the home router forwards
+TCP 80 and 443 to Caddy on the Mac and TCP 4647 to its Nomad server, and the domain's A record
 points at the home address. `sudo deploy/proxy/install-proxy.sh` installs Caddy as a boot service: it renews its
 own certificate and forwards `/worker/v1/*` to the coordinator's worker API and everything else to the lab.
 The Nomad server advertises its RPC at the home address so cloud clients reach it directly; mutual TLS and ACLs
@@ -47,6 +48,14 @@ maintenance job follows it with `deploy/public-address.sh` (which needs `jq`) wh
 with a DigitalOcean token limited to the domain's records: every five minutes it reads the address from OpenDNS's
 resolver, updates the A record when it differs, rewrites `advertise.rpc` in the Nomad server configuration, and
 restarts the server and client agents. Without the file it does nothing.
+An address change can interrupt access until the next maintenance run, DNS cache expiry and worker reconnection.
+Keep the record's TTL short (the current setting is 300 seconds). Keep DNS credentials and live configuration
+outside source control; the current home address does not belong in the repository.
+
+If the ISP puts the connection behind carrier-grade NAT, use the optional [public relay fallback](relay/README.md).
+It forwards HTTPS and Nomad RPC through outbound SSH connections, retaining TLS termination on the Mac.
+Disable home-address DNS maintenance while using it so maintenance cannot overwrite the relay address.
+Direct access was restored and the temporary relay retired on 2026-11-16.
 
 ## Storage and updates
 
