@@ -214,6 +214,34 @@ class DbCompactionTest {
     }
 
     @Test
+    fun `page records keep outcomes witnesses and bench metrics without expanding duplicate details`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
+        val store = Store(config.database)
+        val id = experiment(store, problems = 1, arms = 1)
+        val domain = Json.parseToJsonElement(record(0, 0)).jsonObject
+        val envelope = Json.parseToJsonElement("""{"caseId":"p0","status":"success","metrics":[
+            {"name":"elapsed","value":9.5,"unit":"s","direction":"lower"}],
+            "artifacts":[{"path":"result.txt"}],"protocolVersion":1}""").jsonObject
+        val written = JsonObject(domain + ("labBench" to JsonObject(envelope + ("details" to domain))))
+        // Cover both historical uncompressed records and records written through the current compactor.
+        for (raw in listOf(true, false)) {
+            if (raw) storeRaw(config.database, id, mapOf(0 to written.toString()))
+            else store.caseRecord(id, 0, written.toString())
+            val whole = store.plans.cases(id).single().record!!
+            val page = store.plans.pageCases(id).single().record!!.jsonObject
+            assertEquals(Outcome.of(whole), Outcome.of(page))
+            assertEquals(domain["finalWitness"], page["finalWitness"])
+            assertEquals(envelope, JsonObject(page.getValue("labBench").jsonObject - StoredRecords.DETAILS_OMITTED))
+            assertEquals(assertNotNull(BenchRuns.result(whole.toString())).copy(details = null),
+                assertNotNull(BenchRuns.result(page.toString())))
+            assertNull(page["buildProvenance"])
+            assertNull(page["buildProvenanceRef"])
+            assertTrue(page.toString().length * 4 < whole.toString().length)
+            assertEquals(json(written), json(whole), "full exports retain the original details and provenance")
+        }
+    }
+
+    @Test
     fun `the producer record is cut to its time to best, which a withdrawn claim still gets back`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val id = experiment(store, problems = 1, arms = 1)

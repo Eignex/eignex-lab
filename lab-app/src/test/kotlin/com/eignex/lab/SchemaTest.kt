@@ -65,7 +65,7 @@ class SchemaTest {
         activeAttempt(file, "0:none:0", null)
         assertFailsWith<SQLException> { activeAttempt(file, "1:none:0", null) }
         Store(file)
-        assertEquals(22, version(file))
+        assertEquals(Schema.version, version(file))
         DriverManager.getConnection("jdbc:sqlite:$file").use { c -> c.createStatement().use { s ->
             s.executeQuery("SELECT iteration_id, state, claim_id FROM iteration_attempts").use { r ->
                 assertTrue(r.next()); assertEquals("0:none:0", r.getString(1)); assertEquals("executing", r.getString(2)); assertEquals(null, r.getString(3))
@@ -76,6 +76,34 @@ class SchemaTest {
         activeAttempt(file, "1:none:0", "a".repeat(32))
         activeAttempt(file, "2:none:0", "b".repeat(32))
         assertFailsWith<SQLException> { activeAttempt(file, "3:none:0", "b".repeat(32)) }
+    }
+
+    @Test
+    fun `problem history migration indexes both collection and declared bench identity`() {
+        val file = file()
+        baseline21(file)
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
+            c.createStatement().use { s ->
+                s.executeUpdate("""INSERT INTO problems VALUES
+                    (1, 0, '{"collection":"c","problem":"legacy"}'),
+                    (2, 0, '{"collection":"c","problem":"adapter-id","benchCase":{"attributes":{"problem":"declared"}}}'),
+                    (3, 0, '{"collection":"other","problem":"declared"}')""")
+            }
+        }
+        Store(file)
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c -> c.createStatement().use { s ->
+            for ((problem, job) in listOf("legacy" to 1, "declared" to 2)) {
+                val query = """SELECT job_id FROM problems p WHERE json_extract(p.problem, '$.collection') = 'c'
+                    AND COALESCE(json_extract(p.problem, '$.benchCase.attributes.problem'), json_extract(p.problem, '$.problem')) = '$problem'"""
+                val plan = s.executeQuery("EXPLAIN QUERY PLAN $query").use { r ->
+                    generateSequence { if (r.next()) r.getString("detail") else null }.joinToString(" ")
+                }
+                assertTrue("INDEX problems_identity (<expr>=? AND <expr>=?)" in plan, plan)
+                s.executeQuery(query).use { r ->
+                    assertTrue(r.next()); assertEquals(job, r.getInt(1)); assertTrue(!r.next())
+                }
+            }
+        } }
     }
 
     @Test

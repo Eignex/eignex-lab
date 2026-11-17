@@ -22,6 +22,12 @@ internal object Schema {
             s.execute("DROP INDEX active_session_iteration")
             s.execute("CREATE UNIQUE INDEX active_session_claim ON iteration_attempts (session_id, COALESCE(claim_id, '')) WHERE state IN ('claimed', 'preparing', 'executing', 'uploading')")
         } },
+        // 23: solver bench cases use their declared problem identity, not the adapter's case id. Match the
+        // history queries' full expression so each optimum claim looks up one problem, not its whole collection.
+        { db -> db.createStatement().use { s ->
+            s.execute("DROP INDEX problems_identity")
+            s.execute("CREATE INDEX problems_identity ON problems (json_extract(problem, '$.collection'), COALESCE(json_extract(problem, '$.benchCase.attributes.problem'), json_extract(problem, '$.problem')))")
+        } },
     )
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
