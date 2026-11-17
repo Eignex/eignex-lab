@@ -60,7 +60,8 @@ internal fun trendPage(
                             href = "/trend${query("name" to other)}",
                             classes = if (other == name) "chip on" else "chip",
                         ) {
-                            if (other == name) attributes["aria-current"] = "true${other}"
+                            if (other == name) attributes["aria-current"] = "true"
+                            text(other)
                         }
                     }
                 }
