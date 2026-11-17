@@ -77,7 +77,46 @@ class NomadBackendTest {
         assertEquals(1, store.execution.sessions(id).size)
     }
 
-    private fun fallbackPolicy(): Pair<NomadSpotFallback, () -> Unit> {
+    @Test fun `two explicit preparation interruptions move only the replacement to configured on-demand`() {
+        val policy = fallbackPolicy(shortage = false); policy.second()
+        val stable = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, pendingPlacement = policy.first::apply)
+        val id = setup(preparation = true, admitting = stable); register()
+        var allocation = "allocation"
+        repeat(2) { index ->
+            val frozen = store.execution.manifest(session.id)
+            val claim = stable.claim(session.id, token, allocation)!!
+            val snapshot = ResourceCheckpoint(100, session.budget, "cgroup-v2-hard", "200000 100000", "1073741824",
+                mapOf("cpu.stat" to "usage_usec 1000"), "worker-cumulative-lower-bound", "provider-interruption")
+            store.execution.resourceCheckpoint(claim.owner, snapshot)
+            stable.reconcile()
+            val replacement = store.execution.sessions(id).single { it.desired == Desired.RUN }
+            assertEquals(if (index == 0) "fixture" else "on-demand", store.execution.placement(replacement.id).nodeClass)
+            assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
+            allocation = "replacement-$index"
+            useReplacement(id, allocation, "node-$index")
+        }
+        assertEquals(2, Store(file).execution.preparationInterruptions(id, "fixture"))
+        assertEquals(0, store.execution.preparationInterruptions(id, "another-pool"))
+        assertEquals(2, store.execution.reports(id).count { it.resources?.cpuUsec == 1000L })
+        val current = stable.claim(session.id, token, allocation)!!
+        repeat(3) { stable.reconcile() }
+        assertEquals(current, stable.claim(session.id, token, allocation), "the bound replacement keeps its own attempt")
+        assertEquals(3, store.execution.sessions(id).size)
+    }
+
+    @Test fun `a provider warning after preparation acceptance does not count as lost preparation`() {
+        val id = setup(preparation = true); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        store.execution.commit(claim.owner, IterationResult(emptyList(), preparation = PreparationResult(emptyList(), emptyList())))
+        store.execution.resourceCheckpoint(claim.owner, ResourceCheckpoint(100, session.budget, "cgroup-v2-hard",
+            "200000 100000", "1073741824", mapOf("cpu.stat" to "usage_usec 1000"), "worker-cumulative-lower-bound", "provider-interruption"))
+        assertEquals(0, store.execution.preparationInterruptions(id, "fixture"))
+        assertEquals(1, store.execution.accepted(id).size)
+        assertEquals(1000L, store.execution.reports(id).single().resources?.cpuUsec)
+    }
+
+    private fun fallbackPolicy(shortage: Boolean = true): Pair<NomadSpotFallback, () -> Unit> {
         val spot = CapacityPool("spot", "fixture", 4, 8192, 4, setOf("arch:x86_64"), onDemandFallback = "on-demand")
         val demand = spot.copy(id = "on-demand", nodeClass = "on-demand", market = CapacityMarket.ON_DEMAND, onDemandFallback = null)
         val capacity = CapacitySettings(listOf(spot, demand), 16)
@@ -88,8 +127,9 @@ class NomadBackendTest {
             original.copy(template = template.copy(nodeClass = demand.nodeClass), market = CapacityMarket.ON_DEMAND)))
         var enabled = false
         val snapshot = CapacitySnapshot(now(), 0, CapacityDecision(emptyMap(), emptyList(), emptyList(), emptyMap()), emptyList(), emptyMap(), capacity.pools,
-            spotFallbacks = mapOf(spot.id to demand.id))
-        return NomadSpotFallback(ClusterSettings(queue, capacity), { snapshot.takeIf { enabled } }, { store.job(it)?.experiment }) to { enabled = true }
+            spotFallbacks = if (shortage) mapOf(spot.id to demand.id) else emptyMap())
+        return NomadSpotFallback(ClusterSettings(queue, capacity), { snapshot.takeIf { enabled } },
+            { store.job(it)?.experiment }, store.execution::preparationInterruptions) to { enabled = true }
     }
 
     @Test fun `terminal solve workers stop the finite run clock while the last accepted projection waits`() {
@@ -1247,6 +1287,7 @@ class NomadBackendTest {
             useReplacement(id, allocation, "replacement-node-$index")
         }
         assertEquals(8, store.execution.failureCount(id))
+        assertEquals(0, store.execution.preparationInterruptions(id, "fixture"), "unexplained loss is not a provider interruption")
     }
 
     @Test fun `provider interruptions replace preparation but a declared checksum failure stops it immediately`() = testApplication {

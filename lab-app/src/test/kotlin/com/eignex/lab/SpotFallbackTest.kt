@@ -21,7 +21,28 @@ class SpotFallbackTest {
     private var sample: CapacitySnapshot? = CapacitySnapshot(1000, 0,
         CapacityDecision(emptyMap(), emptyList(), emptyList(), emptyMap()), emptyList(), emptyMap(), capacity.pools,
         spotFallbacks = mapOf(spot.id to demand.id))
-    private val policy = NomadSpotFallback(cluster, { sample }, { spec })
+    private var interruptions = 0
+    private val policy = NomadSpotFallback(cluster, { sample }, { spec }, { job, nodeClass ->
+        assertEquals(7L, job); assertEquals(spot.nodeClass, nodeClass); interruptions
+    })
+
+    @Test fun `repeated preparation interruptions use stable fallback even when Spot capacity is free`() {
+        sample = sample!!.copy(spotFallbacks = emptyMap(), nodes = listOf(CapacityNode("ready", spot.id, CapacityNodeState.READY)))
+        val preparation = PreparationAdmission.mark(template.render(), 2)
+        interruptions = 1
+        assertEquals(preparation, policy.apply(preparation, template.budget))
+        interruptions = 2
+        val next = policy.apply(preparation, template.budget)
+        assertEquals(demand.nodeClass, SessionPlacement.of(next).nodeClass)
+        assertEquals(preparation["TaskGroups"], next["TaskGroups"])
+        assertEquals("repeated-preparation-interruption", next.getValue("Meta").jsonObject.getValue("lab_spot_fallback_reason").jsonPrimitive.content)
+        assertEquals(template.render(), policy.apply(template.render(), template.budget), "solve placement stays automatic")
+        spec = spec.copy(nodeTags = NodeSelector(require = setOf("spot")))
+        assertEquals(preparation, policy.apply(preparation, template.budget))
+        spec = spec.copy(nodeTags = null)
+        sample = sample!!.copy(healthy = false)
+        assertEquals(preparation, policy.apply(preparation, template.budget))
+    }
 
     @Test fun `only recent explicit Spot shortages enable configured fallback`() {
         fun active(code: String = "UnfulfillableCapacity", time: Long = 1000) = SpotFallback.active(capacity,

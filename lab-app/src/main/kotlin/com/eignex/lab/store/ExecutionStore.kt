@@ -39,6 +39,16 @@ class ExecutionStore internal constructor(private val store: Store) {
             row.getString(1)?.let { value -> SessionPlacement.parse(value).copy(preparationSlots = row.getObject(2)?.let { row.getInt(2) }) }
         }.singleOrNull()
     } ?: SessionPlacement.of(submission(id))
+
+    /** Explicit provider losses of unfinished preparations only; successful receipts and unexplained exits do not count. */
+    internal fun preparationInterruptions(job: Long, nodeClass: String): Int = store.executionRead { db ->
+        db.sqlRows("""SELECT s.placement FROM execution_sessions s WHERE s.job_id = ? AND s.execution_class = 'prepare'
+            AND json_extract(s.resource_checkpoint, '$.retirement') = 'provider-interruption'
+            AND EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.session_id = s.id AND a.state = 'lost')
+            AND NOT EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.session_id = s.id AND a.state = 'committed')""", job) {
+            it.getString(1)?.let(SessionPlacement::parse)?.nodeClass
+        }.count { it == nodeClass }
+    }
     /** Executing claim concurrency and unallocated solve slots, without treating reserved arms as running CPUs. */
     internal fun parallelism(jobs: Collection<Long>, at: Long = now()): Map<Long, Pair<Int, Int>> {
         if (jobs.isEmpty()) return emptyMap()
