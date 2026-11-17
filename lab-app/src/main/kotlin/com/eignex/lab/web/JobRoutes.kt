@@ -16,6 +16,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.response.header
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -40,27 +41,44 @@ internal fun Route.jobRoutes(services: ApiServices) {
         })
     }
     get("/jobs/{id}") {
-        val job = io { call.job(store) }
-        if (call.wantsHtml()) {
+        val html = call.wantsHtml()
+        val failedOnly = "failed" in call.parameters
+        val showCommands = "commands" in call.parameters || failedOnly
+        val timings = JobPageTimings()
+        val job = io { timings.measure("job") { call.job(store, withCommands = !html || showCommands) } }
+        if (html) {
             val page = io {
-                val cases = OptimumClaims.qualify(store, store.plans.pageCases(job.id))
-                jobPage(
-                    config.status, job, "failed" in call.parameters,
-                    arms = store.plans.arms(job.id),
-                    cases = cases,
-                    preparation = if (job.backend == Backend.NOMAD) store.execution.reports(job.id).filter { it.session.executionClass == ExecutionClass.PREPARE }.takeLast(1) else emptyList(),
-                    references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases)),
-                    showCommands = "commands" in call.parameters || "failed" in call.parameters,
-                    previous = if (job.origin is JobOrigin.Scheduled) services.pageQueries.previousRun(job) else null,
-                    holds = store.holds.active().filter { it.job == job.id },
-                    hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
-                    nodes = if (job.backend == Backend.NOMAD && job.status.isActive)
-                        jobNodes(config.status, store, listOf(job.id), services.capacitySettings.get())[job.id].orEmpty() else emptyList(),
-                    files = JobDirView.read(config.paths, job),
-                    parallelism = if (job.backend == Backend.NOMAD && job.status.isActive)
-                        store.execution.parallelism(listOf(job.id))[job.id] ?: (0 to 0) else null,
-                )
+                val records = timings.measure("cases") { store.plans.pageCases(job.id) }
+                val cases = timings.measure("optimum") { OptimumClaims.qualify(store, records) }
+                val arms = timings.measure("arms") { store.plans.arms(job.id) }
+                val preparation = timings.measure("preparation") {
+                    if (job.backend == Backend.NOMAD) store.execution.reports(job.id)
+                        .filter { it.session.executionClass == ExecutionClass.PREPARE }.takeLast(1) else emptyList()
+                }
+                val references = timings.measure("references") {
+                    store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
+                }
+                val previous = timings.measure("previous") {
+                    if (job.origin is JobOrigin.Scheduled) services.pageQueries.previousRun(job) else null
+                }
+                val holds = timings.measure("holds") { store.holds.active().filter { it.job == job.id } }
+                val hosts = timings.measure("hosts") { store.hostProgress(listOf(job.id))[job.id].orEmpty() }
+                val nodes = timings.measure("nodes") {
+                    if (job.backend == Backend.NOMAD && job.status.isActive)
+                        jobNodes(config.status, store, listOf(job.id), services.capacitySettings.get())[job.id].orEmpty() else emptyList()
+                }
+                val files = timings.measure("files") { JobDirView.read(config.paths, job, showCommands, failedOnly) }
+                val parallelism = timings.measure("parallelism") {
+                    if (job.backend == Backend.NOMAD && job.status.isActive)
+                        store.execution.parallelism(listOf(job.id))[job.id] ?: (0 to 0) else null
+                }
+                timings.measure("render") {
+                    jobPage(config.status, job, failedOnly, arms = arms, cases = cases, preparation = preparation,
+                        references = references, showCommands = showCommands, previous = previous, holds = holds,
+                        hosts = hosts, nodes = nodes, files = files, parallelism = parallelism)
+                }
             }
+            call.response.header("Server-Timing", timings.header())
             call.respondHtml(page)
         } else {
             val dir = config.jobDir(job.id)
@@ -143,3 +161,16 @@ private fun holdMs(ttlSec: String?): Long {
 private const val DEFAULT_WAIT_SEC = 600L
 private const val MAX_WAIT_SEC = 3600L
 private const val WAIT_POLL_MS = 2000L
+
+/** Timings of the actual reads and render, with total including time waiting for the IO dispatcher. */
+private class JobPageTimings {
+    private val started = System.nanoTime()
+    private val stages = mutableListOf<String>()
+
+    fun <T> measure(name: String, read: () -> T): T {
+        val start = System.nanoTime()
+        return read().also { stages += "$name;dur=${(System.nanoTime() - start) / 1_000_000.0}" }
+    }
+
+    fun header(): String = (stages + "total;dur=${(System.nanoTime() - started) / 1_000_000.0}").joinToString(", ")
+}

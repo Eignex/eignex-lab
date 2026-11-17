@@ -13,6 +13,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -238,11 +239,15 @@ internal object BenchRuns {
     }
 
     fun result(text: String?): BenchResult? = text?.let {
+        runCatching { result(BenchProtocol.json.parseToJsonElement(it)) }.getOrNull()
+    }
+
+    /** Read the envelope directly when a page already has a parsed record, without copying its solver witness. */
+    fun result(record: JsonElement): BenchResult? =
         runCatching {
-            val objectValue = BenchProtocol.json.parseToJsonElement(it) as JsonObject
+            val objectValue = record as JsonObject
             BenchProtocol.json.decodeFromJsonElement(BenchResult.serializer(), objectValue["labBench"] ?: objectValue)
         }.getOrNull()
-    }
 
     fun record(text: String, case: BenchCase, exit: Int): String {
         val result = BenchProtocol.json.decodeFromString<BenchResult>(text)
