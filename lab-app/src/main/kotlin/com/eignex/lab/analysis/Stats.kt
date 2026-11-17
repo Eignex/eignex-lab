@@ -68,8 +68,8 @@ object Stats {
             val par2 = ran.map { p -> runs(byProblem, p, label).map { par2(it) / MS_PER_S }.average() }
             val score = ran.map { p -> points(byProblem.getValue(p), label) }
             val sample = resample(ran.size, random, resamples)
-            ArmStats(label, ran.size, bootstrap(solved, sample, List<Double>::sum), bootstrap(par2, sample, List<Double>::average),
-                bootstrap(score, sample, List<Double>::sum))
+            ArmStats(label, ran.size, bootstrap(solved, sample), bootstrap(par2, sample, mean = true),
+                bootstrap(score, sample))
         }
         val paired = labels.drop(1).map { label -> paired(labels.first(), label, byProblem, random, resamples) }
         return Statistics(arms, paired, noise(labels, byProblem))
@@ -98,7 +98,7 @@ object Stats {
             logRatios += ln(matched.map { par2(mine.getValue(it)) }.average() / matched.map { par2(theirs.getValue(it)) }.average())
         }
         val sample = resample(logRatios.size, random, resamples)
-        val logMean = bootstrap(logRatios, sample, List<Double>::average)
+        val logMean = bootstrap(logRatios, sample, mean = true)
         return Paired(
             label, logRatios.size, Estimate(exp(logMean.value), exp(logMean.low), exp(logMean.high)),
             wilcoxon(logRatios), better, worse, signTest(better, worse),
@@ -154,15 +154,23 @@ object Stats {
         return (2 * exp(max) * logTail.sumOf { exp(it - max) }).coerceAtMost(1.0)
     }
 
-    private fun bootstrap(values: List<Double>, samples: List<List<Int>>, statistic: (List<Double>) -> Double): Estimate {
+    /** Sum in draw order, without boxing each sampled value or allocating a list per statistic and draw. */
+    private fun bootstrap(values: List<Double>, samples: Array<IntArray>, mean: Boolean = false): Estimate {
         if (values.isEmpty()) return Estimate(0.0, 0.0, 0.0)
-        val drawn = samples.map { draw -> statistic(draw.map { values[it] }) }.sorted()
-        return Estimate(statistic(values), drawn[(drawn.size * LOW).toInt()], drawn[((drawn.size - 1) * HIGH).toInt()])
+        val data = values.toDoubleArray()
+        val divisor = if (mean) data.size.toDouble() else 1.0
+        val drawn = DoubleArray(samples.size) { index ->
+            var sum = 0.0
+            for (value in samples[index]) sum += data[value]
+            sum / divisor
+        }
+        drawn.sort()
+        return Estimate(data.sum() / divisor, drawn[(drawn.size * LOW).toInt()], drawn[((drawn.size - 1) * HIGH).toInt()])
     }
 
-    /** [count] indices drawn with replacement, [resamples] times. */
-    private fun resample(count: Int, random: Random, resamples: Int): List<List<Int>> =
-        if (count == 0) emptyList() else List(resamples) { List(count) { random.nextInt(count) } }
+    /** [count] indices drawn with replacement, [resamples] times, shared by all statistics of an arm. */
+    private fun resample(count: Int, random: Random, resamples: Int): Array<IntArray> =
+        if (count == 0) emptyArray() else Array(resamples) { IntArray(count) { random.nextInt(count) } }
 
     private fun runs(byProblem: Map<Problem, List<Pair<CaseResult, Outcome>>>, problem: Problem, label: String) =
         byProblem.getValue(problem).filter { it.first.arm == label }.map { it.second }
