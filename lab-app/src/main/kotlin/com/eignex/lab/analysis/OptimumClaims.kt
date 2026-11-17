@@ -111,9 +111,13 @@ object OptimumClaims {
     fun qualify(store: Store, cases: List<CaseResult>,
                 evidence: (claim: CaseResult) -> Evidence = { claim -> retained(store, claim) }): List<CaseResult> {
         val claimed = cases.filter { (it.record as? JsonObject)?.let(::nativeOptimum) == true }
-            .distinctBy { it.problem.referenceKey }
         if (claimed.isEmpty()) return cases
-        return assess(cases, points(cases) + claimed.flatMap { evidence(it).points })
+        // Without a comparable original-source scope and objective, assess always leaves the claim unverified.
+        // Reading every historical witness for those problems cannot change that result.
+        val comparable = claimed.filter { scope(it) != null && objective(it.record as JsonObject) != null }
+            .distinctBy { it.problem.referenceKey }
+        if (comparable.isEmpty()) return assess(cases, emptyList())
+        return assess(cases, points(cases) + comparable.flatMap { evidence(it).points })
     }
 
     /** The retained evidence of [claim]'s problem as [store] keeps it. */
