@@ -60,7 +60,7 @@ An A/B case row is one workload, seed and repetition with all its configuration 
 the complete row on the same machine in one worker attempt. Different rows, preparation and
 replacement attempts can use different compatible machines; ordinary A/B jobs need no machine pin.
 
-The build uses [KBuild 1.3.6](https://github.com/Eignex/kbuild/releases/tag/v1.3.6) from public GitHub Release assets,
+The build uses [KBuild 1.3.8](https://github.com/Eignex/kbuild/releases/tag/v1.3.8) from public GitHub Release assets,
 including its platform and SDK release-packaging helper. Downloads require no GitHub account or token.
 The service uses JDK 25; the standalone Bench SDK targets Java 17.
 

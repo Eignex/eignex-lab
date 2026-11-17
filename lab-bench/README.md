@@ -387,7 +387,7 @@ rerunning the fetch repairs missing files without rerunning the experiment.
 ./gradlew :lab-bench:check :lab-bench:verifyRelease -PbenchVersion=0.1.1
 ```
 
-KBuild 1.3.6's `com.eignex.publish.github` helper stages the JAR, sources JAR, POM, Gradle Module Metadata and
+KBuild 1.3.8's `com.eignex.publish.github` helper stages the JAR, sources JAR, POM, Gradle Module Metadata and
 `SHA256SUMS` under `lab-bench/build/release-assets/`. `releaseAssets` is an alias for `githubReleaseAssets`.
 The helper is applied independently of KBuild's library conventions so the SDK has no KBuild platform dependency.
 The SDK version is independent of the service version; local builds default to `0.1.1-SNAPSHOT`.
