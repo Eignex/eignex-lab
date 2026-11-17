@@ -13,6 +13,7 @@ import com.eignex.lab.cli.*
 
 import java.nio.file.Files
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -26,9 +27,11 @@ class ProcessGroupsTest {
         val (exit, _) = runProcess(listOf("bash", "-c", "sleep 60 & echo \$! > $pidFile; wait"), timeout = Duration.ofMillis(500))
 
         assertEquals(TIMED_OUT_EXIT, exit)
+        val child = ProcessHandle.of(Files.readString(pidFile).trim().toLong())
+        // Child exit and reaping can finish after the parent process has been collected.
+        child.ifPresent { it.onExit().get(5, TimeUnit.SECONDS) }
+        assertTrue(child.map { !it.isAlive }.orElse(true), "the background child is killed with its group")
         assertTrue(Duration.ofNanos(System.nanoTime() - started) < Duration.ofSeconds(10))
-        val child = Files.readString(pidFile).trim().toLong()
-        assertTrue(ProcessHandle.of(child).map { !it.isAlive }.orElse(true), "the background child is killed with its group")
     }
 
     @Test
