@@ -82,4 +82,21 @@ class StatsTest {
 
         assertEquals(listOf("p0"), Stats.of(listOf("a"), cases).noise.map { it.problem.problem })
     }
+    @Test
+    fun `seeded intervals preserve sums means and paired log ratios`() {
+        val cases = (0 until 8).flatMap { listOf(case("a", it, if (it % 3 == 0) null else it * 37L),
+            case("b", it, if (it % 4 == 0) null else (9 - it) * 29L)) }
+        // Fixed output of the original seeded bootstrap, including an arm with no observations.
+        val zero = Estimate(0.0, 0.0, 0.0)
+        val expected = Statistics(listOf(
+            ArmStats("a", 8, Estimate(5.0, 2.0, 7.0), Estimate(0.8378749999999999, 0.31475, 1.532375), Estimate(3.0, 1.0, 5.0)),
+            ArmStats("b", 8, Estimate(6.0, 3.0, 8.0), Estimate(0.6087499999999999, 0.12687500000000002, 1.275375), Estimate(4.0, 2.0, 6.0)),
+            ArmStats("absent", 0, zero, zero, zero),
+        ), listOf(
+            Paired("b", 7, Estimate(0.7417351103633658, 0.15308546964772693, 3.3465232993883554), 0.7998462186943658, 2, 1, 1.0),
+            Paired("absent", 0, Estimate(1.0, 1.0, 1.0), 1.0, 0, 0, 1.0),
+        ), emptyList())
+        assertEquals(expected, Stats.of(listOf("a", "b", "absent"), cases))
+    }
+
 }

@@ -168,10 +168,33 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
     }
 
     /** Page summaries and bench metrics, with witnesses for optimum assessment but without inflating build
-     * provenance or the bench envelope's duplicate solver details. Full records remain available in exports. */
+     * provenance or the bench envelope's duplicate solver details. Full records remain available in exports.
+     * Like scoring cases, terminal cases are final until retry or recheck. Bound this cache by input size as well as
+     * job count: retained witnesses can be much larger than scoring records. Guard every lookup with database state
+     * so a retry or recheck in another process is visible too. */
     fun pageCases(jobId: Long): List<CaseResult> = synchronized(lock) {
-        casesWith(OPTIMUM_EVIDENCE_RECORD, jobId)
+        val state = jobState(jobId) ?: return emptyList()
+        val revision = caseRevision(jobId)
+        if (!state.first.isActive) pages[jobId]?.takeIf { it.state == state && it.revision == revision }?.let { return it.cases }
+        pages.remove(jobId)?.let { pageWeight -= it.weight }
+        var weight = 0L
+        val cases = casesWith(OPTIMUM_EVIDENCE_RECORD, jobId, weigh = { weight += it })
+        if (!state.first.isActive && weight <= PAGE_CHARACTERS &&
+            jobState(jobId) == state && caseRevision(jobId) == revision) {
+            while (pages.size >= PAGE_JOBS || pageWeight + weight > PAGE_CHARACTERS) {
+                val oldest = pages.entries.iterator()
+                pageWeight -= oldest.next().value.weight
+                oldest.remove()
+            }
+            pages[jobId] = PageCases(state, revision, cases, weight)
+            pageWeight += weight
+        }
+        cases
     }
+
+    private data class PageCases(val state: Pair<Status, Long?>, val revision: Long, val cases: List<CaseResult>, val weight: Long)
+    private val pages = LinkedHashMap<Long, PageCases>(PAGE_JOBS, LOAD_FACTOR, true)
+    private var pageWeight = 0L
 
     /**
      * At most [limit] of [cases], whole, from case index [from] on. A large job's records, final witnesses included,
@@ -210,7 +233,7 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
     }
 
     /** The cases of [jobId] with [record] as each one's record; a [whole] one gets its provenance back ([StoredRecords.inflate]). */
-    private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false): List<CaseResult> = synchronized(lock) {
+    private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false, weigh: ((Long) -> Unit)? = null): List<CaseResult> = synchronized(lock) {
         rows(
             """WITH accepted AS (
                  SELECT i.value AS idx, json_array(t.session_id, t.allocation_id, t.iteration_id, t.generation) AS attempt,
@@ -227,13 +250,19 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
                WHERE c.job_id = ? AND c.idx >= ? ORDER BY c.idx LIMIT ?""",
             jobId, jobId, from, limit,
         ) { rows ->
+            val problem = rows.getString(3)
+            val text = rows.getString(6)
+            val check = rows.getString(9)
+            val stdout = rows.getString(12)
+            // Include metadata and a per-case allowance, even for cases with no record yet.
+            weigh?.invoke(problem.length.toLong() + (text?.length ?: 0) + (check?.length ?: 0) + (stdout?.length ?: 0) + 1024)
             CaseResult(
-                rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
+                rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(problem),
                 rows.getString(4), rows.longOrNull("seed"),
-                withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
-                    rows.getString(9)),
+                withLabCheck(text?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
+                    check),
                 rows.getInt(7), rows.getInt(8) != 0, rows.getString(10)?.let(RecordedHost::of), rows.getObject(11)?.let { rows.getInt(11) != 0 },
-                rows.getString(12)?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
+                stdout?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
                 if (record == "NULL") null else CaseOrigin(jobId, rows.getString(13)),
             )
         }
@@ -252,3 +281,6 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
 /** Provenance keys whose values repeat across thousands of provenances, kept once each ([PlanRepository.keepProvenance]). */
 private val SHARED_PARTS = setOf("harness", "runtime")
 private const val PART_REF = "PartRef"
+
+private const val PAGE_JOBS = 8
+private const val PAGE_CHARACTERS = 16L * 1024 * 1024
