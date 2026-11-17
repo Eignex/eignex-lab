@@ -525,6 +525,40 @@ class NomadBackendTest {
         assertEquals(Status.DONE, store.job(id)!!.status)
     }
 
+    @Test fun `bench pairs expose accepted worker provenance and preserve receipt retries`() = testApplication {
+        val spec = ExperimentSpec("fixed-work", bench = BenchSpec("bench.json"), host = HostPlacement.AUTO,
+            configs = listOf(mapOf("label" to "before"), mapOf("label" to "after")))
+        val id = setup(1, spec); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        assertEquals(2, claim.indices.size)
+        store.execution.phase(claim.owner, "uploading")
+        val observation = ResourceObservation("cgroup-v2-hard", manifest.budget, "200000 100000",
+            "1073741824", "25", "Linux", "amd64", emptyMap(), "c".repeat(64), claim.parallel, claim.indices.size)
+        val bytes = Json.encodeToString(observation).toByteArray()
+        val hash = ExecutionStore.digest(String(bytes))
+        val record = """{"schemaVersion":1,"caseId":"fixed-work-sat","metrics":{"nodes":100},"labExecution":{"policy":"spoofed"}}"""
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2, record) },
+            mapOf("nomad/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}-resources.json" to hash))
+        val body = WorkerInlineCommit(claim.owner, result, mapOf(hash to Base64.getEncoder().encodeToString(bytes)))
+        application { workerApi(store, backend(), artifacts) { true } }
+        repeat(2) {
+            assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/${session.id}/commit-inline") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                setBody(Json.encodeToString(body))
+            }.status)
+        }
+        val records = Store(file).plans.cases(id).map { assertNotNull(it.record).jsonObject }
+        assertEquals(2, records.size)
+        for (accepted in records) {
+            assertEquals("fixed-work-sat", accepted.getValue("caseId").jsonPrimitive.content)
+            assertEquals(100, accepted.getValue("metrics").jsonObject.getValue("nodes").jsonPrimitive.int)
+            assertEquals(hash, accepted.getValue("labExecution").jsonObject.getValue("receiptSha256").jsonPrimitive.content)
+            assertNotNull(ComparisonExecution.frame(accepted))
+        }
+        assertEquals(records[0]["labExecution"], records[1]["labExecution"])
+        assertEquals(1, store.execution.accepted(id).size)
+    }
+
     private class RegionalBlobs : BuildArchives {
         val objects = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
         val gets = java.util.concurrent.CopyOnWriteArrayList<String>()
@@ -1088,7 +1122,11 @@ class NomadBackendTest {
             referenceFilter = spec.problems.firstOrNull()?.get("reference")?.let { ReferenceFilterMode.valueOf(it.uppercase()) } ?: ReferenceFilterMode.ANY)) else spec
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
-        val plannedProblems = List(problems) { Problem("s", "p$it") }
+        val plannedProblems = List(problems) { index ->
+            if (spec.isBench && !preparation) BenchRuns.problem(com.eignex.lab.bench.BenchCase("p$index",
+                resources = com.eignex.lab.bench.BenchResources(cpus = 1, memoryMiB = 512, timeoutSeconds = 5)))
+            else Problem("s", "p$index")
+        }
         val id = store.create(name, "main", emptyList(), vcpus = 2, experiment = spec)
         if (!preparation) store.plan(id, arms, plannedProblems, cases, cases.map { "true" to 5L })
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("bin/bench", "c".repeat(64), 5)), Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "test")

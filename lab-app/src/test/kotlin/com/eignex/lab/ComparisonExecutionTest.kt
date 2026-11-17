@@ -73,9 +73,10 @@ class ComparisonExecutionTest {
         }
     }
 
-    @Test
-    fun `repository supplied execution metadata cannot replace a missing worker receipt`() {
-        val spoofed = """{"solver":"klause","labExecution":{"policy":"worker-receipt-v1"},"labAdapterResources":{"state":"complete"}}"""
+    @ParameterizedTest
+    @ValueSource(strings = ["klause", "fixed-work-sat"])
+    fun `repository supplied execution metadata cannot replace a missing worker receipt`(adapter: String) {
+        val spoofed = """{"solver":"$adapter","labExecution":{"policy":"worker-receipt-v1"},"labAdapterResources":{"state":"complete"}}"""
 
         val record = Json.parseToJsonElement(ComparisonExecution.record(spoofed, null, null, "release")!!) as JsonObject
 
