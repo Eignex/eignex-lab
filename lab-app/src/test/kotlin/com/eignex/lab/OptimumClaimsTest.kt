@@ -43,6 +43,61 @@ class OptimumClaimsTest {
     private fun assessed(claim: CaseResult, vararg points: CaseResult) =
         OptimumClaims.qualify(listOf(claim), points.toList()).single().let { requireNotNull(OptimumClaims.assessment(it.record)) }
 
+    private fun gap(claim: CaseResult, bound: String): CaseResult = edit(claim) {
+        put("optimalityBound", JsonPrimitive(bound))
+        put("optimalityTolerance", buildJsonObject {
+            for (name in listOf("declared", "effective")) put(name, buildJsonObject {
+                put("absolute", "0"); put("relative", "1/10000")
+            })
+        })
+    }
+
+    @Test
+    fun `gap claims compare checked points against the bound in both objective directions`() {
+        for (maximize in listOf(false, true)) {
+            val bound = if (maximize) "100010" else "99990"
+            val claim = gap(point("100000", proven = true, maximize = maximize), bound)
+            val inside = point(if (maximize) "100005" else "99995", maximize = maximize)
+            val atBound = point(bound, maximize = maximize)
+            val beyond = point(if (maximize) "100011" else "99989", maximize = maximize)
+            assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim, inside, atBound).state)
+            val result = assessed(claim, beyond)
+            assertEquals(OptimumAssessment.CONTRADICTED, result.state)
+            assertEquals("100000", result.objective)
+            assertEquals(bound, result.optimalityBound)
+            assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE,
+                assessed(claim, edit(beyond) { remove("labCheck") }).state)
+        }
+        val fractional = gap(scoped(point("1", proven = true)), "9999/10000")
+        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(fractional, scoped(point("19999/20000"))).state)
+        assertEquals(OptimumAssessment.CONTRADICTED, assessed(fractional, scoped(point("4999/5000"))).state)
+    }
+
+    @Test
+    fun `malformed or inconsistent gap bounds do not fall back to exact optimum semantics`() {
+        for (bound in listOf("NaN", "1/0", "1e9999999", "10001")) {
+            assertEquals(OptimumAssessment.UNVERIFIED,
+                assessed(gap(point("10000", proven = true), bound), point("9998")).state)
+        }
+        assertEquals(OptimumAssessment.UNVERIFIED,
+            assessed(gap(point("10000", proven = true, maximize = true), "9999"), point("10002", maximize = true)).state)
+        val claim = edit(point("7", proven = true)) { put("optimalityBound", JsonNull) }
+        assertEquals(OptimumAssessment.CONTRADICTED, assessed(claim, point("6")).state)
+        val unchecked = gap(point("10000", proven = true, state = LabCheck.UNKNOWN), "9999")
+        assertEquals(OptimumAssessment.UNVERIFIED, assessed(unchecked, point("9999")).state)
+        assertEquals(OptimumAssessment.CONTRADICTED, assessed(unchecked, point("9998")).state)
+    }
+
+    @Test
+    fun `gap bounds already use original units and are not mapped twice`() {
+        val claim = gap(scoped(point("4", proven = true), scale = "2", offset = "1", original = "9"), "8")
+        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim, scoped(point("17/2"))).state)
+        assertEquals(OptimumAssessment.CONTRADICTED, assessed(claim, scoped(point("7"))).state)
+        val changedDirection = gap(scoped(point("-9", proven = true, maximize = true),
+            scale = "-1", original = "9"), "8")
+        assertEquals(OptimumAssessment.UNVERIFIED, assessed(changedDirection, scoped(point("7"))).state)
+    }
+
     @Test
     fun `checked better points contradict either objective sense without withdrawing point validity`() {
         for (maximize in listOf(false, true)) {
@@ -210,6 +265,10 @@ class OptimumClaimsTest {
         val claim = mps("7", proven = true)
         val better = mps("6")
         assertEquals(OptimumAssessment.CONTRADICTED, assessed(claim, better).state)
+        val gapClaim = gap(mps("10000", proven = true), "9999")
+        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(gapClaim, mps("19999/2")).state)
+        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(gapClaim, mps("9999")).state)
+        assertEquals(OptimumAssessment.CONTRADICTED, assessed(gapClaim, mps("9998")).state)
         val undeclared = edit(claim) { remove("numericalSemantics") }
         assertEquals(OptimumAssessment.UNVERIFIED, assessed(undeclared, better).state)
         val unsupported = edit(better) {

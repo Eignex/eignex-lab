@@ -22,6 +22,7 @@ data class OptimumAssessment(
     val evidenceJob: Long? = null,
     val evidenceCase: Int? = null,
     val scopeAuthority: String? = null,
+    val optimalityBound: String? = null,
 ) {
     companion object {
         const val CONTRADICTED = "contradicted"
@@ -73,7 +74,13 @@ object OptimumClaims {
                     "original source, effective semantics, objective mapping or claim scope unavailable")
                 else -> {
                     val mapped = mapping(record)?.apply(value)
-                    val better = mapped?.let { bound -> points[claim].orEmpty().filter {
+                    // Gap bounds are already in original units, unlike an optionally mapped incumbent.
+                    // A null bound denotes an exact optimum, including on producers encoding defaults.
+                    val gap = record["optimalityBound"]?.takeUnless { it is JsonNull }
+                    val bound = if (gap == null) mapped else Q.parse((gap as? JsonPrimitive)?.content)
+                        ?.takeIf { text(record, "maximize")?.toBooleanStrictOrNull() == claim.maximize }
+                        ?.takeIf { mapped != null && if (claim.maximize) it >= mapped else it <= mapped }
+                    val better = bound?.let { bound -> points[claim].orEmpty().filter {
                         if (claim.maximize) it.objective > bound else it.objective < bound
                     }.minWithOrNull { a, b -> a.objective.compareTo(b.objective) * if (claim.maximize) -1 else 1 } }
                     val check = record["labCheck"] as? JsonObject
@@ -82,15 +89,22 @@ object OptimumClaims {
                     }
                     when {
                         mapped == null -> OptimumAssessment(OptimumAssessment.UNVERIFIED, "objective mapping unavailable")
+                        bound == null -> OptimumAssessment(OptimumAssessment.UNVERIFIED,
+                            "gap optimum bound is malformed or inconsistent with the original objective", mapped.toString())
                         better != null -> OptimumAssessment(OptimumAssessment.CONTRADICTED,
-                            "a scope-matched independently checked original-source point improves the native optimum",
+                            if (gap == null) "a scope-matched independently checked original-source point improves the native optimum"
+                            else "a scope-matched independently checked original-source point beats the claimed optimality bound",
                             mapped.toString(), better.objective.toString(), better.witness, better.policy,
                             better.job, better.index,
-                            if (record["optimalityScope"] is JsonObject) "declared-scope" else "published-source-contract")
+                            if (record["optimalityScope"] is JsonObject) "declared-scope" else "published-source-contract",
+                            if (gap == null) null else bound.toString())
                         !checkedClaim -> OptimumAssessment(OptimumAssessment.UNVERIFIED,
-                            "the claimed point has no scope-matched independent check in the supplied evidence", mapped.toString())
+                            "the claimed point has no scope-matched independent check in the supplied evidence", mapped.toString(),
+                            optimalityBound = if (gap == null) null else bound.toString())
                         else -> OptimumAssessment(OptimumAssessment.NO_COUNTEREXAMPLE,
-                            "no scope-matched checked better point in the supplied evidence; native proof remains independently unverified", mapped.toString())
+                            if (gap == null) "no scope-matched checked better point in the supplied evidence; native proof remains independently unverified"
+                            else "no scope-matched checked point beats the claimed optimality bound; native proof remains independently unverified",
+                            mapped.toString(), optimalityBound = if (gap == null) null else bound.toString())
                     }
                 }
             }

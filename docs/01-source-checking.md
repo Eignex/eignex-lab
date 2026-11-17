@@ -14,6 +14,14 @@ maps transport reported objectives into original units before comparison; malfor
 to rounded display values. A point must carry a valid independent receipt with matching source and witness digests
 and an identified checker. Failed, unsupported and incomplete checks provide no counterexample.
 
+A gap optimum carries `optimalityBound` in exact original units: a lower bound for minimization, an upper bound
+for maximization, in the record's objective direction. Only a checked point strictly beyond that bound contradicts
+the claim; a better incumbent inside the gap or equal to the bound does not. The producer's `optimalityTolerance`
+describes the declared and effective gap, but the assessment compares the actual proved bound without rounding or
+reconstructing it from tolerances. A missing or null bound retains exact-optimum semantics. A malformed bound,
+a direction mismatch or a bound on the wrong side of the incumbent leaves the claim unverified. Derived
+assessments retain the bound separately from the incumbent objective; neither is an independently verified proof.
+
 The whole-source exact integer XCSP3 adapter uses original source costs and its official cost-checking receipt.
 Its semantic identity is SHA-256 of `xcsp3-integer-source-v1`; scope provenance stays separate from equality.
 Its authority is the published original-source optimum contract. This does not identify the internal proof scope
