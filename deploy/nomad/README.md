@@ -363,6 +363,14 @@ for ten minutes from that failure, then new admissions try Spot again. Quota, au
 do not trigger more expensive purchasing. Already running workers finish on their current nodes, and explicit `spot` or
 `!on-demand` selectors remain binding. Ready Spot capacity is reused before buying fallback capacity.
 
+An unfinished preparation that has suffered two explicitly reported provider interruptions on the same pool
+also moves its next replacement to that pool's configured on-demand fallback. This job-specific decision requires
+a fresh healthy capacity snapshot and preserves the original budgets, inputs and all failed-attempt costs. It can
+use on-demand even when Spot has free slots. Successful preparations, solve interruptions and unexplained worker
+exits do not count. Bound workers keep their attempts; later solve placement remains automatic. Replacement
+metadata records `repeated-preparation-interruption`, and a pending-session move records
+`placement-preparation-interrupted`. Explicit Spot-only selectors still prevent this fallback.
+
 The coordinator fences and replaces only unallocated sessions, retaining source commits, prepared inputs, budgets and
 accepted paired rows. Replacement submissions record `lab_spot_fallback_from` and `lab_spot_fallback_reason`; execution
 logs record `placement-spot-unavailable`, and `/capacity` and Nodes report active `spotFallbacks` and actual pool markets.

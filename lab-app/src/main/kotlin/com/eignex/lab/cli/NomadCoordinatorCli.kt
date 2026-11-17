@@ -112,7 +112,8 @@ object NomadCoordinatorCli {
             CapacityCollector(checkNotNull(capacitySettings), integration.inventoryFiles.map(Path::of),
                 Path.of(integration.healthTokenFile), config.dataDir.resolve("nomad/capacity-state.json"), store, client, disk::allowsWork, config.localNodeTags)
         }
-        val spotFallback = NomadSpotFallback(cluster, { runCatching { capacity?.snapshot() }.getOrNull() }, { store.job(it)?.experiment })
+        val spotFallback = NomadSpotFallback(cluster, { runCatching { capacity?.snapshot() }.getOrNull() },
+            { store.job(it)?.experiment }, store.execution::preparationInterruptions)
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
             pendingPlacement = spotFallback::apply,
             changed = { admissionSignal.wake(); reconcileSignal.wake() }, solveAllowed = artifacts::allowsNewSolve,
