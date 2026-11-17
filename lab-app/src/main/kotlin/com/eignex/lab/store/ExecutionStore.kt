@@ -540,6 +540,18 @@ class ExecutionStore internal constructor(private val store: Store) {
         s
     }
     fun authorize(owner: AttemptOwner, at: Long = now()): Long = store.executionRead { db -> db.attempt(owner, at).jobId }
+    /** A short, diagnostic-only window after deadline fencing. Never renews or accepts an attempt. */
+    internal fun authorizeDeadlineDiagnostics(owner: AttemptOwner, at: Long = now()): Pair<Long, List<Int>> = store.executionTransaction { db ->
+        val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown diagnostic attempt")
+        // The worker may notice expiry before the reconciliation pass. Apply the same deadline fence first.
+        if (attempt.state.isActive && store.job(attempt.jobId)?.runRemainingMs(at)?.let { it <= 0 } == true)
+            db.failRunDeadline(attempt.jobId, at)
+        val ended = db.sqlRows("SELECT state, finished_at FROM iteration_attempts WHERE session_id = ? AND iteration_id = ? AND generation = ?",
+            owner.session, owner.iteration, owner.generation) { it.getString(1) to it.getLong(2) }.single()
+        if (ended.first != "run-timeout" || at > ended.second + 120_000 || db.session(owner.session)?.allocation != owner.allocation)
+            throw ExecutionFenced("deadline diagnostics expired or ineligible")
+        attempt.jobId to attempt.indices
+    }
     internal fun authorizeCommit(owner: AttemptOwner, result: IterationResult, at: Long = now()): Long = store.executionRead { db ->
         val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (attempt.state == AttemptState.COMMITTED) {

@@ -144,6 +144,16 @@ fun Application.workerApi(
                 s.requireOwns(body.owner)
                 store.execution.resourceCheckpoint(body.owner, body.checkpoint); call.respond(HttpStatusCode.NoContent)
             }
+            post("/deadline-diagnostics") {
+                // Deliberately independent of work admission: these bytes cannot become accepted results.
+                val s = call.session
+                val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
+                s.requireOwns(owner)
+                store.execution.authorizeDeadlineDiagnostics(owner)
+                val body = Json.decodeFromString<WorkerDiagnosticFiles>(call.bodyText(WorkerDiagnostics.WIRE_BYTES))
+                withContext(CoordinatorIo.artifacts) { backend.diagnostics.retain(owner, body) }
+                call.respond(HttpStatusCode.NoContent)
+            }
             post("/progress") {
                 // Lease and status updates must survive admission holds.
                 val s = call.session; val body = Json.decodeFromString<WorkerProgress>(call.bodyText())
