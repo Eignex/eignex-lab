@@ -16,9 +16,7 @@ import kotlinx.serialization.json.*
 internal object ComparisonExecution {
     fun record(text: String?, observation: ResourceObservation?, receipt: String?, release: String): String? {
         val record = text?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() } ?: return text
-        if ("comparisonControls" !in record && (record["solver"] as? JsonPrimitive)?.content != "klause") {
-            return if ("labAdapterResources" in record) JsonObject(record - "labAdapterResources").toString() else text
-        }
+        // Provenance belongs to the accepted attempt, independent of the adapter's result schema.
         val clean = record - setOf("labExecution", "labAdapterResources")
         if (observation == null || receipt == null) return JsonObject(clean).toString()
         val frame = buildJsonObject {
