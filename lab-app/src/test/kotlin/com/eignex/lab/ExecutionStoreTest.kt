@@ -522,6 +522,20 @@ class ExecutionStoreTest {
         assertTrue(restarted.execution.sessions(id).all { it.desired == Desired.STOP })
     }
 
+    @Test fun `worker deadline diagnostics apply the deadline fence before the next reconciliation`() {
+        val id = bench(); bind(id)
+        val claim = store.execution.claim("s", token, "alloc-s", 1100)!!
+        store.execution.phase(claim.owner, "uploading", 1200)
+        assertFailsWith<ExecutionFenced> { store.execution.authorizeDeadlineDiagnostics(claim.owner, 1500) }
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertEquals(id to claim.indices, store.execution.authorizeDeadlineDiagnostics(claim.owner, 2000))
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertTrue(store.execution.accepted(id).isEmpty())
+        assertTrue(store.plans.cases(id).all { it.record == null })
+        assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner, 2001) }
+        assertFailsWith<ExecutionFenced> { store.execution.authorizeDeadlineDiagnostics(claim.owner, 122001) }
+    }
+
     @Test fun `bench deadline survives replacement and cannot be reported without an allowance`() {
         val id = bench(); bind(id)
         store.execution.claim("s", token, "alloc-s", 1100)!!

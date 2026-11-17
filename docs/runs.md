@@ -333,6 +333,14 @@ These child and RSS semantics follow the
 Set `bench.sourceValidation=true` for independent witness checking. A checked witness does not certify
 optimality. Only an invalid verdict withdraws the solver claim; unsupported or failed checks leave it unchecked.
 `bench.runTimeoutSec` optionally bounds active preparation and execution time; queue time is excluded.
+After whole-run expiry, a worker makes one best-effort diagnostic upload of available case results, witnesses,
+termination records and resource captures. These files live under
+`nomad/diagnostics/<session>/<iteration>-<generation>/`, with a `receipt.json` explicitly marking them unaccepted.
+They never populate accepted case records or combine with replacement attempts. Collection is limited to five
+seconds, 128 files, 1 MiB per file and 16 MiB total, followed by one five-second request. The receipt marks truncated
+files and collection limits. The authenticated failed attempt can publish only within 120 seconds of its deadline
+fence; ordinary execution, lease renewal and result acceptance remain fenced. Read retained diagnostics through
+`lab files` and `lab fetch`. Missing evidence after abrupt worker loss or a failed upload remains unknown.
 
 Set `bench.replayJobs` to a map from each new arm label to a completed or failed source job to reuse its
 durably accepted preparation and resolved arm plan. `bench.frozenCases` pins the requested workload subset. Each arm must match

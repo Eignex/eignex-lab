@@ -188,6 +188,17 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             fun phase(value: String) { if (remaining() <= 0) throw LeaseLost("attempt lease ended"); retry { coordinator.json("phase", Json.encodeToString(WorkerPhase(claim.owner, value))) } }
             val directory = root.resolve("attempts/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}")
             val logs = streamLogs(claim, directory)
+            val diagnosticsSent = java.util.concurrent.atomic.AtomicBoolean()
+            fun retainDiagnostics() {
+                if (manifest.preparationTimeoutSec != null || !Files.isDirectory(directory) || !diagnosticsSent.compareAndSet(false, true)) return
+                runCatching { deadlineDiagnostics(claim, directory, observation) }
+                    .onFailure { println("worker deadline diagnostics unavailable: ${it.javaClass.simpleName}") }
+            }
+            val diagnosticHook = Thread({
+                if (runRemainingMs()?.let { it <= 0 } == true) retainDiagnostics()
+            }, "worker-deadline-diagnostics")
+            Runtime.getRuntime().addShutdownHook(diagnosticHook)
+            var fenced = false
             try {
                 val preparationStarted = System.nanoTime()
                 var executionStarted = preparationStarted
@@ -274,12 +285,19 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 lifecycle.reason = WorkerLifecycle.Reason.RUN_DEADLINE
                 retry(ignoreRunDeadline = true) { coordinator.json("run-timeout", Json.encodeToString(claim.owner)) }
                 return false
+            } catch (failure: ExecutionFenced) {
+                fenced = true
+                throw failure
             } catch (failure: WorkerBuildFailure) {
                 lifecycle.reason = WorkerLifecycle.Reason.WORKER_FAILURE
                 if (interruption.requested()) return false
                 retry { coordinator.json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
                 return false
             } finally {
+                // Normal upload requests and heartbeats stay fenced. This separate route can only retain
+                // bounded diagnostic files for a run-timeout attempt, never accept or revive its row.
+                if (fenced || runRemainingMs()?.let { it <= 0 } == true) retainDiagnostics()
+                runCatching { Runtime.getRuntime().removeShutdownHook(diagnosticHook) }
                 logs.close(); deadline.set(0); heartbeat.shutdownNow()
                 retryLeaseDeadlines.remove(claim.owner); resourceOwners.remove(claim.owner)
             }
@@ -316,6 +334,15 @@ class WorkerSession(private val api: URI, private val id: String, private val to
 
     private fun solveWaitMs(response: HttpResponse<ByteArray>): Long =
         runCatching { Json.decodeFromString<SolveWait>(String(response.body())).retryMs }.getOrDefault(5_000L).coerceIn(1_000L, 30_000L)
+
+    /** At most five seconds collecting bounded files and one five-second request; no work or upload retries. */
+    internal fun deadlineDiagnostics(claim: IterationClaim, directory: Path, observation: ResourceObservation) {
+        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        Files.writeString(directory.resolve("resource-observation.json"), Json.encodeToString(observation.copy(
+            counters = ResourceObservation.counters(), iterationParallel = claim.parallel, iterationCases = claim.indices.size)))
+        val body = WorkerDiagnostics.collect(directory, claim.indices) { (until - System.nanoTime()) / 1_000_000 }
+        coordinator.json("deadline-diagnostics", Json.encodeToString(body), claim.owner)
+    }
 
     /**
      * A solve session's attempts side by side, [slots] cases at once: whenever one ends, the session asks again under a

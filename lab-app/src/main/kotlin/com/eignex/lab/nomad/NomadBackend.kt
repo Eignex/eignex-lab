@@ -37,6 +37,7 @@ class NomadBackend(
     private val pendingPlacement: (JsonObject, ResourceBudget) -> JsonObject = { job, _ -> job },
 ) {
     val logs = WorkerLogs(store, jobDirectory)
+    internal val diagnostics = WorkerDiagnostics(store, jobDirectory)
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
     private val cpuPlacement = NomadCpuPlacement(nomad)
     private val preparationAdmission = PreparationAdmission(store)

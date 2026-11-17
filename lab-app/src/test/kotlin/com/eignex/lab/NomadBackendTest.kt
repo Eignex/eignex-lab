@@ -351,6 +351,45 @@ class NomadBackendTest {
         assertTrue(store.execution.accepted(id).isEmpty())
     }
 
+    @ParameterizedTest @ValueSource(strings = ["executing", "uploading"])
+    fun `deadline diagnostics survive execution and upload expiry without accepting a partial row`(phase: String) = testApplication {
+        val spec = ExperimentSpec("deadline-diagnostics", host = HostPlacement.AUTO, grid = mapOf("x" to listOf("a", "b")),
+            profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60, classpath = listOf("tools/lib/*")))
+        val id = setup(1, spec); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        assertEquals(2, claim.indices.size)
+        store.execution.phase(claim.owner, phase)
+        val text = "{\"diagnostic\":true}"
+        val capture = WorkerDiagnosticFile(text.length.toLong(), Base64.getEncoder().encodeToString(text.toByteArray()))
+        val body = WorkerDiagnosticFiles(mapOf("cases/0/out/result.json" to capture, "0.termination" to capture), false)
+        application { workerApi(store, backend(), artifacts) { false } }
+        suspend fun send(owner: AttemptOwner = claim.owner, value: WorkerDiagnosticFiles = body) =
+            client.post("/worker/v1/sessions/${session.id}/deadline-diagnostics") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                header("X-Lab-Attempt", Json.encodeToString(owner)); setBody(Json.encodeToString(value))
+            }
+        assertEquals(HttpStatusCode.Conflict, send().status, "a live row cannot publish failed diagnostics")
+        store.execution.runTimedOut(claim.owner)
+        assertEquals(HttpStatusCode.Conflict, send(claim.owner.copy(token = "wrong")).status)
+        assertEquals(HttpStatusCode.BadRequest, send(value = body.copy(files = mapOf("cases/999/result.json" to capture))).status)
+        repeat(2) { assertEquals(HttpStatusCode.NoContent, send().status) }
+        val location = WorkerDiagnostics.path(root.resolve("jobs/$id"), claim.owner)
+        assertEquals(text, Files.readString(location.resolve("cases/0/out/result.json")))
+        val receipt = Json.parseToJsonElement(Files.readString(location.resolve("receipt.json"))).jsonObject
+        assertEquals(false, receipt.getValue("accepted").jsonPrimitive.boolean)
+        assertEquals(claim.owner.generation, receipt.getValue("generation").jsonPrimitive.int)
+        assertFalse(receipt.toString().contains(claim.owner.token))
+        assertFalse(Files.exists(root.resolve("jobs/$id/cases/0/out/result.json")))
+        val restarted = Store(file)
+        assertTrue(restarted.execution.accepted(id).isEmpty())
+        assertTrue(restarted.plans.cases(id).all { it.record == null })
+        assertEquals(Status.FAILED, restarted.job(id)!!.status)
+        assertFailsWith<ExecutionFenced> { restarted.execution.renew(claim.owner) }
+        assertFailsWith<ExecutionFenced> { restarted.execution.commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })) }
+        assertFailsWith<ExecutionFenced> { restarted.execution.authorizeDeadlineDiagnostics(claim.owner, now() + 121_000) }
+        assertEquals(HttpStatusCode.BadRequest, send(value = body.copy(limited = true)).status, "retained snapshots are immutable")
+    }
+
     @ParameterizedTest @ValueSource(booleans = [false, true])
     fun `large result paths retain complete records and enforce fenced idempotent acceptance`(packed: Boolean) = testApplication {
         val id = setup(1); register()
