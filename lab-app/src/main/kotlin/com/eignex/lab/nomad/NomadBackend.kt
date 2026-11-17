@@ -221,10 +221,10 @@ class NomadBackend(
             if (manifest.experiment.isBench) require(selected == preparation.selections) { "bench plan changed after approval" }
             fun identities(groups: List<List<Problem>>) = groups.map { group -> group.map { Triple(it.suite, it.problem, it.collection) } }
             require(identities(selected) == identities(preparation.selections)) { "prepared files differ from the approved selection" }
-            val approvedKeys = selected.flatten().map { it.collection to it.problem }.toSet()
+            val approvedKeys = selected.flatten().map { it.referenceKey }.toSet()
             // Consumer name filters may also classify substring matches; annotations never expand the approved work.
             accepted = result.copy(preparation = preparation.copy(features = preparation.features.filter {
-                (it.collection to it.problem) in approvedKeys
+                ProblemKey(it.collection, it.problem) in approvedKeys
             }, selectionCache = emptyList()))
             // An offered plan must be the one this job accepted, and its corpus inputs ones this job retained.
             require(preparation.selectionCache.map { it.arm }.distinct().size == preparation.selectionCache.size)
