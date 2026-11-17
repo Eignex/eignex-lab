@@ -450,6 +450,14 @@ Abrupt node loss can prevent the final snapshot. Missing exit/signal/OOM evidenc
 also retains bounded Nomad task termination evidence in execution events, including for older worker releases.
 These receipts do not accept a build, reset failed-attempt costs, or change owner/generation/lease fencing.
 
+Workers also write two bounded `worker-lifecycle-v1` JSON receipts to their uploaded console at
+`nomad/workers/<session>.log`: registration and retirement. They require no attempt owner, so a preparation
+that exits before its first claim still records whether the coordinator returned no work, an admission wait
+expired, the worker was fenced, or a provider interruption was observed. Available resource counters retain
+their cumulative lower-bound scope; missing counters remain unknown. The receipts contain fixed reason codes,
+not exception messages, commands or credentials. Read them with `lab files` and `lab fetch`. Abrupt process or
+node loss can prevent delivery of the final receipt.
+
 Repository-specific recipes and named workload sets live with their consumers. Before removing a legacy
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
 has no implicit solver executable, build layout, corpus selections or JVM profile classpath.

@@ -37,6 +37,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     private val retryLeaseDeadlines = java.util.concurrent.ConcurrentHashMap<AttemptOwner, Long>()
     private val retries = WorkerRetry()
     private val interruption = WorkerInterruption(drainFile)
+    private val lifecycle = WorkerLifecycle()
     @Volatile internal var preparationRecorder: PreparationRecorder? = null
     private fun leaseRemainingMs(): Long = minOf(interruption.remainingMs(), retryLeaseDeadlines.values.maxOrNull()
         ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE)
@@ -84,17 +85,27 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         Files.createDirectories(root)
         val console = ConsoleUpload(WorkerConsole(root.resolve("worker-console.log"), WorkerLogs.MAX_WORKER_BYTES))
         val consoleUploads = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-console").apply { isDaemon = true } }
-        val consoleHook = Thread({ uploadConsole(console) }, "worker-console-final")
+        val consoleHook = Thread({
+            lifecycle.retire(if (interruption.requested()) WorkerLifecycle.Reason.PROVIDER_INTERRUPTION else WorkerLifecycle.Reason.WORKER_SHUTDOWN)
+            uploadConsole(console)
+        }, "worker-console-final")
         Runtime.getRuntime().addShutdownHook(consoleHook)
         try {
             consoleUploads.scheduleWithFixedDelay({ uploadConsole(console) }, CONSOLE_UPLOAD_SEC, CONSOLE_UPLOAD_SEC, TimeUnit.SECONDS)
             runSession()
         } catch (failure: Throwable) {
+            lifecycle.reason = when (failure) {
+                is ExecutionFenced -> WorkerLifecycle.Reason.COORDINATOR_FENCED
+                is RunDeadlineExceeded -> WorkerLifecycle.Reason.RUN_DEADLINE
+                is LeaseLost -> WorkerLifecycle.Reason.LEASE_LOST
+                else -> WorkerLifecycle.Reason.WORKER_FAILURE
+            }
             // Printed here, inside the uploaded console, so the job's worker log ends with why the session ended.
             printFailure(failure)
             reported = failure
             throw failure
         } finally {
+            lifecycle.retire(if (interruption.requested()) WorkerLifecycle.Reason.PROVIDER_INTERRUPTION else lifecycle.reason)
             consoleUploads.shutdownNow()
             uploadConsole(console)
             runCatching { Runtime.getRuntime().removeShutdownHook(consoleHook) }
@@ -106,6 +117,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val manifest = retry { Json.decodeFromString<WorkManifest>(String(coordinator.json("register", Json.encodeToString(WorkerRegistration(release))).body())) }
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
+        lifecycle.registered(observation)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
         val gradleCache = GradleCacheProxy({ method, key, body ->
             val response = coordinator.request("gradle-cache/$key", method, body?.let(HttpRequest.BodyPublishers::ofByteArray) ?: HttpRequest.BodyPublishers.noBody())
@@ -145,6 +157,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         try {
         /** Runs [claim] to its accepted commit; false when the session must end after it. */
         fun attempt(claim: IterationClaim): Boolean {
+            lifecycle.claimed = true
             val deadline = AtomicLong(0)
             fun renew() {
                 val start = System.nanoTime()
@@ -258,9 +271,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 deleteTree(directory)
                 return !result.runTimedOut
             } catch (_: RunDeadlineExceeded) {
+                lifecycle.reason = WorkerLifecycle.Reason.RUN_DEADLINE
                 retry(ignoreRunDeadline = true) { coordinator.json("run-timeout", Json.encodeToString(claim.owner)) }
                 return false
             } catch (failure: WorkerBuildFailure) {
+                lifecycle.reason = WorkerLifecycle.Reason.WORKER_FAILURE
                 if (interruption.requested()) return false
                 retry { coordinator.json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
                 return false
@@ -274,11 +289,13 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             while (true) {
                 if (interruption.requested()) return
                 val response = retry { coordinator.json("claim", """{"wait":true}""") }
-                if (response.statusCode() == 204) return
+                if (response.statusCode() == 204) { lifecycle.reason = WorkerLifecycle.Reason.NO_WORK; return }
                 if (response.statusCode() == 202) {
                     // Journal pressure: keep this session and its warm workspaces, but not indefinitely.
                     val started = heldSince ?: System.nanoTime().also { heldSince = it }
-                    if (System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(MAX_SOLVE_WAIT_MS)) return
+                    if (System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(MAX_SOLVE_WAIT_MS)) {
+                        lifecycle.reason = WorkerLifecycle.Reason.ADMISSION_WAIT_EXHAUSTED; return
+                    }
                     Thread.sleep(solveWaitMs(response))
                     continue
                 }
