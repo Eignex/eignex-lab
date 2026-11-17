@@ -173,6 +173,15 @@ internal object BenchRuns {
             includeDirs = case.inputs.filter { it.role == "include" }.map(::portableInput), benchCase = case)
     }
 
+    fun features(case: BenchCase): ProblemFeatures? {
+        val themes = case.attributes["themes"].orEmpty().split(',').map(String::trim).filter(String::isNotEmpty).distinct()
+        val logic = case.attributes["logic"]?.takeIf(String::isNotBlank)
+        val structure = case.attributes["structure"]?.takeIf(String::isNotBlank)
+        if (themes.isEmpty() && logic == null && structure == null) return null
+        val key = problem(case).referenceKey
+        return ProblemFeatures(key.collection, key.problem, themes, structure, logic)
+    }
+
     private fun portableInput(input: BenchInput): String =
         (if (input.root == BenchInputRoot.CORPUS) "lab-corpus/" else "lab-source/") + input.path
 
