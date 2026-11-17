@@ -37,7 +37,7 @@ internal class QueuePageCache(
             age > maxAgeMs -> "Queue snapshot is stale (${age / 1000}s old); waiting for the next background refresh."
             else -> "Queue snapshot refreshes in the background."
         }
-        return Html(page.markup.replace("<!--queue-snapshot-->", esc(message).markup))
+        return Html(page.markup.replace("<!--queue-snapshot-->", htmlText(message).markup))
     }
 
     fun start() {

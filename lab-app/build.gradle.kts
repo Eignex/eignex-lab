@@ -21,6 +21,7 @@ dependencies {
     implementation(libs.ktor.server.content.negotiation)
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.server.status.pages)
+    implementation(libs.html)
     implementation(libs.sqlite)
     implementation(libs.zstd)
     implementation(libs.commons.compress)

@@ -10,10 +10,12 @@ import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
+import kotlinx.html.*
 
 /**
- * Several experiments side by side, each arm named by its job: a scheduled run against the one before it, or any
- * experiments over the same problems. Problems pair up by suite and name, seeds by value.
+ * Several experiments side by side, each arm named by its job: a scheduled run against the one
+ * before it, or any experiments over the same problems. Problems pair up by suite and name, seeds
+ * by value.
  */
 internal fun comparePage(
     repoUrl: String,
@@ -21,10 +23,25 @@ internal fun comparePage(
     arms: List<PlannedArm>,
     cases: List<CaseResult>,
     references: Map<ProblemKey, Reference> = emptyMap(),
-): Html = page("compare ${jobs.joinToString(", ") { it.id.toString() }} · eignex lab") {
-    append(Html("<header><h1>Compare "))
-    append(jobs.joinHtml(Html(" · ")) { (Html("<a href=\"/jobs/") + it.id + Html("\">") + it.id + Html(" ") + esc(it.name) + Html("</a>")) })
-    append(Html("</h1></header><div>"))
-    append(experimentSection(repoUrl, null, arms, cases, references))
-    append(Html("</div>"))
-}
+): Html =
+    page("compare ${jobs.joinToString(", ") { it.id.toString() }} · eignex lab") {
+        header {
+            h1 {
+                text("Compare ")
+                emit(
+                    jobs.joinHtml(buildHtml { text(" · ") }) {
+                        buildHtml {
+                            a(href = "/jobs/${it.id}") {
+                                emit(it.id)
+                                text(" ")
+                                emit(it.name)
+                            }
+                        }
+                    },
+                )
+            }
+        }
+        div {
+            emit(experimentSection(repoUrl, null, arms, cases, references))
+        }
+    }

@@ -10,14 +10,13 @@ import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
-
+import kotlinx.html.*
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-
 
 /**
- * How a schedule's runs moved over its commits: solved and proven shares with the solved interval, PAR-2 time, and
- * solved share per suite, against commit or date. The runs ride in the page as JSON; a small script draws the charts.
+ * How a schedule's runs moved over its commits: solved and proven shares with the solved interval,
+ * PAR-2 time, and solved share per suite, against commit or date. The runs ride in the page as
+ * JSON; a small script draws the charts.
  */
 internal fun trendPage(
     name: String?,
@@ -27,129 +26,429 @@ internal fun trendPage(
     /** Runs left out because they ran an earlier experiment than the schedule's current one. */
     earlier: Int = 0,
     all: Boolean = false,
-    /** Finished runs whose points are still being computed in the background, left out until they are. */
+    /**
+     * Finished runs whose points are still being computed in the background, left out until they
+     * are.
+     */
     computing: Int = 0,
-): Html = page("${name ?: "regression"} · eignex lab", tab = Tab.REGRESSION, script = PageScripts.trend) {
-    // Not live for the page-wide refresh, which refetches the whole page: the charts have no live parts, and a page whose
-    // points are computing polls a small progress call instead ([trendPoll]).
-    if (name == null) {
-        append(Html("<header><h1>Regression</h1></header><p class=\"empty-state\">No schedule yet: <code>lab schedule</code> sets one up, "))
-        append(Html("and its runs chart here, one point per commit.</p>"))
-        return@page
-    }
-    append(Html("<header><h1>Regression</h1><p class=\"muted\">") + esc(name) + Html(" · results across commits</p>"))
-    if (schedules.size > 1) {
-        append(Html("<nav class=\"tools trend-schedules\" aria-label=\"Regression schedules\">"))
-        for (other in schedules) {
-            append(Html("<a class=\"chip") + (if (other == name) " on" else "") + Html("\"") + (if (other == name) Html(" aria-current=\"true\"") else "") + Html(" href=\"/trend") + query("name" to other) + Html("\">") + esc(other) + Html("</a>"))
+): Html =
+    page("${name ?: "regression"} · eignex lab", tab = Tab.REGRESSION, script = PageScripts.trend) {
+        // Not live for the page-wide refresh, which refetches the whole page: the charts have no
+        // live parts, and a page whose
+        // points are computing polls a small progress call instead ([trendPoll]).
+        if (name == null) {
+            header { h1 { text("Regression") } }
+            p(classes = "empty-state") {
+                text("No schedule yet: ")
+                code { text("lab schedule") }
+                text(" sets one up, ")
+                text("and its runs chart here, one point per commit.")
+            }
+            return@page
         }
-        append(Html("</nav>"))
+        header {
+            h1 { text("Regression") }
+            p(classes = "muted") {
+                emit(name)
+                text(" · results across commits")
+            }
+            if (schedules.size > 1) {
+                nav(classes = "tools trend-schedules") {
+                    attributes["aria-label"] = "Regression schedules"
+                    for (other in schedules) {
+                        a(
+                            href = "/trend${query("name" to other)}",
+                            classes = if (other == name) "chip on" else "chip",
+                        ) {
+                            if (other == name) attributes["aria-current"] = "true${other}"
+                        }
+                    }
+                }
+            }
+            p(classes = "muted") {
+                emit(runs.size)
+                text(" runs · ")
+                a(href = "/${query("name" to name)}") {
+                    text("its jobs")
+                }
+                if (computing > 0) {
+                    text(" · ")
+                    emit(computing)
+                    text(" more being computed, shown as they are ready")
+                }
+                if (earlier > 0) {
+                    text(" · ")
+                    emit(earlier)
+                    text(" earlier runs of a different experiment left out: ")
+                    a(href = "/trend${query("name" to name, "all" to "1")}") {
+                        text("show them")
+                    }
+                }
+                val specs = runs.map { it.spec }.distinct().size
+                if (runs.any { it.sourceChecked } && runs.any { !it.sourceChecked }) {
+                    text(
+                        " · runs marked unchecked report the solver's own claims; checked ones asked for source-witness validation",
+                    )
+                }
+                if (all && specs > 1) {
+                    text(" · ")
+                    emit(specs)
+                    text(" experiments, each change marked by a dashed line: ")
+                    a(href = "/trend${query("name" to name)}") {
+                        text("current only")
+                    }
+                }
+            }
+        }
+        if (runs.isEmpty()) {
+            p(classes = "empty-state") {
+                emit(
+                    when {
+                        computing > 0 ->
+                            "Computing ${if (all) "its runs" else "this experiment's runs"}; they appear here as they are ready."
+                        all -> "No run of this schedule has results yet."
+                        else -> "No run of this schedule's current experiment has results yet."
+                    },
+                )
+            }
+            emit(trendPoll(runs.size, computing))
+            return@page
+        }
+        if (runs.any { it.benchmark != null }) {
+            emit(benchmarkTrendContent(runs, repoUrl))
+            script(type = "application/json") {
+                id = "trend-data"
+                unsafe { +defaultsJson.encodeToString(runs).replace("<", "\\u003c") }
+            }
+            emit(trendPoll(runs.size, computing))
+            return@page
+        }
+        div(classes = "trend-toolbar") {
+            nav(classes = "queue-sections") {
+                attributes["aria-label"] = "Regression sections"
+                a(href = "#performance") {
+                    text("Performance")
+                }
+                a(href = "#themes") {
+                    text("Themes")
+                }
+                a(href = "#runs") {
+                    text("Runs")
+                }
+            }
+            div(classes = "tools") {
+                attributes["role"] = "group"
+                attributes["aria-label"] = "x-axis"
+                span(classes = "muted") {
+                    text("X-axis")
+                }
+                button(classes = "chip on") {
+                    attributes["type"] = "button"
+
+                    attributes["aria-pressed"] = "true"
+                    attributes["data-x"] = "commit"
+                    text("Commit")
+                }
+                button(classes = "chip") {
+                    attributes["type"] = "button"
+
+                    attributes["aria-pressed"] = "false"
+                    attributes["data-x"] = "date"
+                    text("Date")
+                }
+            }
+        }
+        div(classes = "trend-charts") {
+            attributes["id"] = "performance"
+
+            section(classes = "chart-panel") {
+                attributes["aria-labelledby"] = "solved-heading"
+                h2 {
+                    attributes["id"] = "solved-heading"
+                    text("Solved and proven")
+                }
+                p(classes = "chart-description") {
+                    text(
+                        "Problems out of those each run ran, with seeds and repeats averaged. Band: 95% interval of solved.",
+                    )
+                }
+                div(classes = "legend") {
+                    span {
+                        i {
+                            attributes["style"] = "background:var(--series-1)"
+                        }
+                        text("solved")
+                    }
+                    span {
+                        i {
+                            attributes["style"] = "background:var(--series-2)"
+                        }
+                        text("proven")
+                    }
+                    span {
+                        i(classes = "hollow") {}
+                        text("run still going")
+                    }
+                    span {
+                        i(classes = "flag") {}
+                        text("disagrees with the reference")
+                    }
+                }
+                div(classes = "chart") {
+                    attributes["id"] = "chart-solved"
+                }
+            }
+            section(classes = "chart-panel") {
+                attributes["aria-labelledby"] = "par2-heading"
+                h2 {
+                    attributes["id"] = "par2-heading"
+                    text("PAR-2 time")
+                }
+                p(classes = "chart-description") {
+                    text(
+                        "Mean seconds per problem; an unsolved one is charged twice its budget. Lower is better. Band: 95% interval.",
+                    )
+                }
+                div(classes = "chart") {
+                    attributes["id"] = "chart-par2"
+                }
+            }
+        }
+        section {
+            attributes["id"] = "themes"
+            attributes["aria-labelledby"] = "themes-heading"
+            h2 {
+                attributes["id"] = "themes-heading"
+                text("Solved by theme")
+            }
+            p(classes = "chart-description") {
+                text(
+                    "Problems solved in each theme the sweep set was drawn by. A problem with several themes counts in each; each axis tops out at the theme's size.",
+                )
+            }
+            div(classes = "multiples") {
+                attributes["id"] = "suites"
+            }
+        }
+        section {
+            attributes["id"] = "runs"
+            attributes["aria-labelledby"] = "runs-heading"
+            h2 {
+                attributes["id"] = "runs-heading"
+                text("Runs ")
+                small {
+                    emit(runs.size)
+                    text(" runs, newest first")
+                }
+            }
+            div(classes = "scroll") {
+                attributes["role"] = "region"
+                attributes["aria-label"] = "Regression runs"
+                attributes["tabindex"] = "0"
+                table(classes = "runs-table") {
+                    thead {
+                        tr {
+                            th { text("job") }
+                            th { text("commit") }
+                            th { text("when") }
+                            th(classes = "num") {
+                                text("problems")
+                            }
+                            th(classes = "num") {
+                                text("solved")
+                            }
+                            th(classes = "num") {
+                                text("eligible native proofs")
+                            }
+                            th { text("point / proof evidence") }
+                            th(classes = "num") {
+                                text("unsupported")
+                            }
+                            th(classes = "num") {
+                                text("errors")
+                            }
+                            th(classes = "num") {
+                                text("disagreements")
+                            }
+                            th(classes = "num") {
+                                attributes["title"] =
+                                    "problems solved to a worse objective than the reference"
+                                text("worse incumbent")
+                            }
+                            th(classes = "num") {
+                                attributes["title"] =
+                                    "against the run before: problems lost and gained, the sign test, and what reruns confirmed"
+                                text("vs previous")
+                            }
+                            th(classes = "num") {
+                                text("PAR-2 s")
+                            }
+                        }
+                    }
+                    tbody {
+                        for (run in runs.asReversed()) {
+                            val commit = commitLink(repoUrl, run.sha)
+                            tr {
+                                td {
+                                    a(href = "/jobs/${run.job}") {
+                                        emit(run.job)
+                                    }
+                                    emit(
+                                        if (run.finished) ""
+                                        else
+                                            buildHtml {
+                                                text(" ")
+                                                small(classes = "muted") {
+                                                    text("running")
+                                                }
+                                            },
+                                    )
+                                    emit(trendWitness(run))
+                                }
+                                td { code { emit(commit) } }
+                                td { emit(ago(run.at)) }
+                                td(classes = "num") {
+                                    emit(run.problems)
+                                }
+                                td(classes = "num") {
+                                    emit(percent(run.solved.value))
+                                    text(" ")
+                                    small(classes = "muted") {
+                                        emit(percent(run.solved.low))
+                                        text("–")
+                                        emit(percent(run.solved.high))
+                                    }
+                                }
+                                td(classes = "num") {
+                                    emit(percent(run.proven))
+                                }
+                                td {
+                                    emit(run.checkedPoints)
+                                    text(" checked points; ")
+                                    emit(run.nativeProofClaims)
+                                    text(" native claims; ")
+                                    emit(run.contradictedOptima)
+                                    text(" contradicted; ")
+                                    emit(run.unverifiedOptima)
+                                    text(" unverified scope/check")
+                                }
+                                td(classes = "num") {
+                                    emit(run.unsupported)
+                                }
+                                td(classes = "num") {
+                                    emit(run.errors)
+                                }
+                                td(classes = "num") {
+                                    emit(
+                                        if (run.disagreements > 0)
+                                            buildHtml {
+                                                a(classes = "FAILED", href = "/jobs/${run.job}") {
+                                                    emit(run.disagreements)
+                                                }
+                                            }
+                                        else buildHtml { text("0") },
+                                    )
+                                }
+                                td(classes = "num") {
+                                    a(classes = "plain", href = "/jobs/${run.job}") {
+                                        emit(run.worse)
+                                    }
+                                }
+                                td(classes = "num") {
+                                    emit(flipCell(run))
+                                }
+                                td(classes = "num") {
+                                    emit("%.2f".format(run.par2.value))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        div(classes = "tip") {
+            attributes["id"] = "tip"
+
+            attributes["hidden"] = ""
+        }
+        script {
+            attributes["type"] = "application/json"
+            attributes["id"] = "trend-data"
+            // Every field, defaults included: the script reads each run's fields without guarding
+            // for absent ones.
+            unsafe { +defaultsJson.encodeToString(runs).replace("<", "\\u003c") }
+        }
+        emit(trendPoll(runs.size, computing))
     }
-    append(Html("<p class=\"muted\">") + runs.size + Html(" runs · <a href=\"/") + query("name" to name) + Html("\">its jobs</a>"))
-    if (computing > 0) append(Html(" · ") + computing + Html(" more being computed, shown as they are ready"))
-    if (earlier > 0) {
-        append(Html(" · ") + earlier + Html(" earlier runs of a different experiment left out: <a href=\"/trend") + query("name" to name, "all" to "1") + Html("\">show them</a>"))
+
+/**
+ * Whether a trend run's solution claims were checked against their sources, as a small word with
+ * its meaning on hover.
+ */
+private fun trendWitness(run: TrendRun): Html = buildHtml {
+    text(" ")
+    small(classes = if (run.sourceChecked) "DONE" else "muted") {
+        title =
+            if (run.sourceChecked)
+                "asked for source-witness validation: its solutions in checked formats are source-checked"
+            else
+                "no source-witness validation asked for: its solutions are the solver's own reports${if (run.sourceChecked) "checked" else "unchecked"}"
     }
-    val specs = runs.map { it.spec }.distinct().size
-    if (runs.any { it.sourceChecked } && runs.any { !it.sourceChecked }) {
-        append(Html(" · runs marked unchecked report the solver's own claims; checked ones asked for source-witness validation"))
+    text(" ")
+    small(classes = "muted") {
+        title = run.comparisonSeries.joinToString(", ")
+        +(if (
+            run.comparisonSeries.isEmpty() ||
+                run.comparisonSeries == listOf("historical-unqualified")
+        )
+            "historical controls unqualified"
+        else "controlled series")
     }
-    if (all && specs > 1) {
-        append(Html(" · ") + specs + Html(" experiments, each change marked by a dashed line: <a href=\"/trend") + query("name" to name) + Html("\">current only</a>"))
-    }
-    append(Html("</p></header>"))
-    if (runs.isEmpty()) {
-        append(Html("<p class=\"empty-state\">"))
-        append(esc(when {
-            computing > 0 -> "Computing ${if (all) "its runs" else "this experiment's runs"}; they appear here as they are ready."
-            all -> "No run of this schedule has results yet."
-            else -> "No run of this schedule's current experiment has results yet."
-        }))
-        append(Html("</p>") + trendPoll(runs.size, computing))
-        return@page
-    }
-    if (runs.any { it.benchmark != null }) {
-        append(benchmarkTrendContent(runs, repoUrl))
-        append(Html("<script type=\"application/json\" id=\"trend-data\">") +
-            Html(defaultsJson.encodeToString(runs).replace("</", "<\\/")) + Html("</script>"))
-        append(trendPoll(runs.size, computing))
-        return@page
-    }
-    append(Html("<div class=\"trend-toolbar\"><nav class=\"queue-sections\" aria-label=\"Regression sections\"><a href=\"#performance\">Performance</a><a href=\"#themes\">Themes</a><a href=\"#runs\">Runs</a></nav>"))
-    append(Html("<div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">X-axis</span>"))
-    append(Html("<button type=\"button\" class=\"chip on\" aria-pressed=\"true\" data-x=\"commit\">Commit</button><button type=\"button\" class=\"chip\" aria-pressed=\"false\" data-x=\"date\">Date</button></div></div>"))
-    append(Html("<div id=\"performance\" class=\"trend-charts\"><section class=\"chart-panel\" aria-labelledby=\"solved-heading\"><h2 id=\"solved-heading\">Solved and proven</h2><p class=\"chart-description\">Problems out of those each run ran, with seeds and repeats averaged. Band: 95% interval of solved.</p>"))
-    append(Html("<div class=\"legend\"><span><i style=\"background:var(--series-1)\"></i>solved</span>"))
-    append(Html("<span><i style=\"background:var(--series-2)\"></i>proven</span>"))
-    append(Html("<span><i class=\"hollow\"></i>run still going</span>"))
-    append(Html("<span><i class=\"flag\"></i>disagrees with the reference</span></div>"))
-    append(Html("<div class=\"chart\" id=\"chart-solved\"></div></section>"))
-    append(Html("<section class=\"chart-panel\" aria-labelledby=\"par2-heading\"><h2 id=\"par2-heading\">PAR-2 time</h2><p class=\"chart-description\">Mean seconds per problem; an unsolved one is charged twice its budget. Lower is better. Band: 95% interval.</p>"))
-    append(Html("<div class=\"chart\" id=\"chart-par2\"></div></section></div>"))
-    append(Html("<section id=\"themes\" aria-labelledby=\"themes-heading\"><h2 id=\"themes-heading\">Solved by theme</h2><p class=\"chart-description\">Problems solved in each theme the sweep set was drawn by. A problem with several themes counts in each; each axis tops out at the theme's size.</p><div class=\"multiples\" id=\"suites\"></div></section>"))
-    append(Html("<section id=\"runs\" aria-labelledby=\"runs-heading\"><h2 id=\"runs-heading\">Runs <small>") + runs.size + Html(" runs, newest first</small></h2><div class=\"scroll\" role=\"region\" aria-label=\"Regression runs\" tabindex=\"0\"><table class=\"runs-table\"><thead><tr><th>job</th><th>commit</th><th>when</th>"))
-    append(Html("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">eligible native proofs</th><th>point / proof evidence</th>"))
-    append(Html("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>"))
-    append(Html("<th class=\"num\" title=\"problems solved to a worse objective than the reference\">worse incumbent</th>"))
-    append(Html("<th class=\"num\" title=\"against the run before: problems lost and gained, the sign test, and what reruns confirmed\">"))
-    append(Html("vs previous</th>"))
-    append(Html("<th class=\"num\">PAR-2 s</th></tr></thead><tbody>"))
-    for (run in runs.asReversed()) {
-        val commit = commitLink(repoUrl, run.sha)
-        append(Html("<tr><td><a href=\"/jobs/") + run.job + Html("\">") + run.job + Html("</a>") + (if (run.finished) "" else Html(" <small class=\"muted\">running</small>")))
-        append(Html("") + trendWitness(run) + Html("</td>"))
-        append(Html("<td><code>") + commit + Html("</code></td><td>") + ago(run.at) + Html("</td><td class=\"num\">") + run.problems + Html("</td>"))
-        append(Html("<td class=\"num\">") + percent(run.solved.value) + Html(" <small class=\"muted\">") + percent(run.solved.low) + Html("–") + percent(run.solved.high) + Html("</small></td>"))
-        append(Html("<td class=\"num\">") + percent(run.proven) + Html("</td><td>") + run.checkedPoints + Html(" checked points; ") +
-            run.nativeProofClaims + Html(" native claims; ") + run.contradictedOptima + Html(" contradicted; ") +
-            run.unverifiedOptima + Html(" unverified scope/check</td><td class=\"num\">") + run.unsupported + Html("</td><td class=\"num\">") + run.errors + Html("</td>"))
-        append(Html("<td class=\"num\">"))
-        append(if (run.disagreements > 0) (Html("<a class=\"FAILED\" href=\"/jobs/") + run.job + Html("\">") + run.disagreements + Html("</a>")) else Html("0"))
-        append(Html("</td>"))
-        append(Html("<td class=\"num\"><a class=\"plain\" href=\"/jobs/") + run.job + Html("\">") + run.worse + Html("</a></td>"))
-        append(Html("<td class=\"num\">") + flipCell(run) + Html("</td>"))
-        append(Html("<td class=\"num\">") + ("%.2f".format(run.par2.value)) + Html("</td></tr>"))
-    }
-    append(Html("</tbody></table></div></section><div id=\"tip\" class=\"tip\" hidden></div>"))
-    append(Html("<script type=\"application/json\" id=\"trend-data\">"))
-    // Every field, defaults included: the script reads each run's fields without guarding for absent ones.
-    append(Html(defaultsJson.encodeToString(runs).replace("</", "<\\/")))
-    append(Html("</script>"))
-    append(trendPoll(runs.size, computing))
 }
 
-/** Whether a trend run's solution claims were checked against their sources, as a small word with its meaning on hover. */
-private fun trendWitness(run: TrendRun): Html =
-    (if (run.sourceChecked) {
-        Html(" <small class=\"DONE\" title=\"asked for source-witness validation: its solutions in checked formats are source-checked\">checked</small>")
-    } else {
-        Html(" <small class=\"muted\" title=\"no source-witness validation asked for: its solutions are the solver's own reports\">unchecked</small>")
-    }) + (Html(" <small class=\"muted\" title=\"") + (esc(run.comparisonSeries.joinToString(", "))) + Html("\">")) +
-        (if (run.comparisonSeries.isEmpty() || run.comparisonSeries == listOf("historical-unqualified"))
-            "historical controls unqualified" else "controlled series") + Html("</small>")
-
-/** A run against the one before it: lost and gained, the sign test when it is telling, and what reruns confirmed. */
+/**
+ * A run against the one before it: lost and gained, the sign test when it is telling, and what
+ * reruns confirmed.
+ */
 private fun flipCell(run: TrendRun): Html = buildHtml {
-    val lost = run.lost ?: return Html("–")
+    val lost = run.lost ?: return buildHtml { text("–") }
     val gained = run.gained ?: 0
-    append(Html("feasibility −") + lost + Html(" +") + gained)
-    append(Html("; proof −") + (run.proofLost ?: 0) + Html(" +") + (run.proofGained ?: 0))
-    append(Html("; objective −") + (run.objectiveLost ?: 0) + Html(" +") + (run.objectiveGained ?: 0))
-    run.flipP?.takeIf { it < FLIP_SIGNIFICANCE }?.let { append(Html(" <small>p=%.3f</small>".format(it))) }
+    text("feasibility −")
+    emit(lost)
+    text(" +")
+    emit(gained)
+    text("; proof −")
+    emit(run.proofLost ?: 0)
+    text(" +")
+    emit(run.proofGained ?: 0)
+    text("; objective −")
+    emit(run.objectiveLost ?: 0)
+    text(" +")
+    emit(run.objectiveGained ?: 0)
+    run.flipP
+        ?.takeIf { it < FLIP_SIGNIFICANCE }
+        ?.let {
+            text(" ")
+            small { +"p=%.3f".format(it) }
+        }
     val job = run.confirmJob ?: return@buildHtml
     val confirmedLost = run.confirmedLost
-    append(Html(" · <a href=\"/jobs/") + job + Html("\">"))
-    append(
-        if (confirmedLost == null) {
-            Html("confirming")
-        } else {
-            val cls = if (confirmedLost > 0 || (run.confirmedProofLost ?: 0) > 0 || (run.confirmedObjectiveLost ?: 0) > 0) Html(" class=\"FAILED\"") else ""
-            (Html("<span") + cls + Html(">confirmed feasibility −") + confirmedLost + Html(" +") + (run.confirmedGained ?: 0) + Html("; ")) +
-                "proof −${run.confirmedProofLost ?: 0} +${run.confirmedProofGained ?: 0}; " +
-                (Html("objective −") + (run.confirmedObjectiveLost ?: 0) + Html(" +") + (run.confirmedObjectiveGained ?: 0) + Html("</span>"))
-        },
-    )
-    append(Html("</a>"))
+    text(" · ")
+    a(href = "/jobs/$job") {
+        if (confirmedLost == null) +"confirming"
+        else
+            span {
+                if (
+                    confirmedLost > 0 ||
+                        (run.confirmedProofLost ?: 0) > 0 ||
+                        (run.confirmedObjectiveLost ?: 0) > 0
+                )
+                    classes = setOf("FAILED")
+                +"confirmed feasibility −$confirmedLost +${run.confirmedGained ?: 0}; "
+                +"proof −${run.confirmedProofLost ?: 0} +${run.confirmedProofGained ?: 0}; "
+                +"objective −${run.confirmedObjectiveLost ?: 0} +${run.confirmedObjectiveGained ?: 0}"
+            }
+    }
 }
 
 /** Below this, a run's flips against the one before lean one way more than chance would. */
@@ -158,11 +457,18 @@ private const val FLIP_SIGNIFICANCE = 0.05
 private fun percent(share: Double) = "%.1f%%".format(share * 100)
 
 /**
- * While a trend page's points are still being computed ([trendPage]'s `computing`), it polls `/trend/progress` with its
- * own query and reloads once the server would show other than its [runs], so the points appear without the reader asking
- * again; it stops once nothing is computing. A page with nothing computing gets no script.
+ * While a trend page's points are still being computed ([trendPage]'s `computing`), it polls
+ * `/trend/progress` with its own query and reloads once the server would show other than its
+ * [runs], so the points appear without the reader asking again; it stops once nothing is computing.
+ * A page with nothing computing gets no script.
  */
-private fun trendPoll(runs: Int, computing: Int): Html = if (computing == 0) Html("") else Html("""<script>
+private fun trendPoll(runs: Int, computing: Int): Html =
+    if (computing == 0) buildHtml {}
+    else
+        buildHtml {
+            script {
+                unsafe {
+                    +"""
 (function () {
   const poll = setInterval(async function () {
     if (document.hidden) return;
@@ -175,4 +481,7 @@ private fun trendPoll(runs: Int, computing: Int): Html = if (computing == 0) Htm
     } catch (e) {}
   }, 5000);
 })();
-</script>""")
+"""
+                }
+            }
+        }
