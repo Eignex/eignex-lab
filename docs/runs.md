@@ -683,6 +683,33 @@ optimality/UNSAT flags remain distinct from independently checked source proofs.
 
 ## Schedule names and ordering
 
+### Klause sweep resource policy
+
+The committed recipe in `deploy/schedules/klause-sweep.json` runs the repository's sweep through
+`klause-bench/lab/bench-linux.json`. It requires Linux and requests `vcpus=1`, so each solve worker runs one case
+under an enforced cgroup CPU and memory budget. Preparation has its own grant. Placement remains automatic;
+different rows can use different compatible nodes, while every confirmation row keeps both revisions together
+in one worker attempt. Adapter resource observations supplement the accepted worker receipts.
+
+This policy starts the `klause-sweep-linux-cpu1-v1` comparison series. Keep the 10-second solver limit, seed,
+source validation and repository-owned sweep selection. Mac history remains available, but its wall times are
+not a solver-only baseline for the new platform. A cgroup quota is a limit, not a dedicated physical core or a
+promise of noise-free timings; paired confirmations still decide regression attribution.
+
+Apply the recipe to the existing schedule, preserving its ID and history:
+
+```sh
+deploy/lab reschedule 2 deploy/schedules/klause-sweep.json
+```
+
+Before applying it, run a bounded copy at an exact revision and inspect `labExecution.frame`: require
+`enforcement=cgroup-v2-hard`, a finite `cpuMax` matching the one-CPU grant, finite `memoryMax`, and worker
+parallelism of one. Confirm that selected source identities match the old sweep and that paired confirmation
+receipts put all arms of each row on the same worker attempt. Record the validation job and any unsuccessful
+attempts separately. Merely changing a selector or seeing the API accept a schedule is not rollout evidence.
+
+### Renaming
+
 Schedules are listed by priority, highest first, with creation order breaking ties. Rename a schedule with
 `deploy/lab rename-schedule <id> <name>`. Its ID, last revision, check cadence and all scheduled run and confirmation
 history are retained; the renamed series continues comparing with its existing baseline.

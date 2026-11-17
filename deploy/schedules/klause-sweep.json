@@ -1,0 +1,22 @@
+{
+  "name": "klause-sweep",
+  "priority": 100,
+  "description": "Per-commit regression check: the default engine on the frozen 183-case sweep at 10 s, with 68 SMT and 68 MiniZinc/XCSP3 cases; the SMT sample covers all 23 additional ground logics. Linux CPU1 series: enforced cgroup budgets, one case per worker; automatic placement, complete paired confirmation rows.",
+  "repository": "Eignex/klause",
+  "bench": {
+    "manifest": "klause-bench/lab/bench-linux.json",
+    "request": {
+      "parameters": {
+        "selections": "[{\"set\":\"sweep\"}]",
+        "timeout-ms": "10000",
+        "comparison-series": "klause-sweep-linux-cpu1-v1"
+      }
+    },
+    "sourceValidation": true,
+    "adapterResources": true
+  },
+  "tags": [
+    "platform:linux"
+  ],
+  "vcpus": 1
+}
