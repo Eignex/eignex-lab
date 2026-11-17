@@ -294,6 +294,11 @@ use automatic placement and do not require one machine for the entire experiment
 to the case id. Keys must be unique and all arms must select the same workload identities and
 input bytes. Directory contents are pinned too. Missing workloads and changed inputs fail preparation.
 
+Optional case attributes `themes` (comma-separated), `logic` and `structure` declare source classification
+for the lab's theme and class views. Preparation retains them under the source's collection and problem
+identity, independently of seed, repetition and runtime variant, and fills missing stored features.
+Adapters own these labels; declaring a logic or theme does not certify solver support or a result.
+
 The optional manifest `runtime` object declares `java` (the exact Java feature version),
 `requiredTags`, `tools` (executable names) and `environment`. Tags constrain preparation and
 execution; Java and tools are checked before entry-point invocation. Environment assignments

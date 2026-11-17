@@ -314,7 +314,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         } else require(selections == raw)
 
         println("worker selection verification: hashedFiles=${inputDigests.hashedFiles} reusedFiles=${inputDigests.reusedFiles} hashedBytes=${inputDigests.hashedBytes} reusedPlans=${reusedSelections.size}")
-        val features = emptyList<ProblemFeatures>()
+        val features = selections.flatten().mapNotNull { it.benchCase?.let(BenchRuns::features) }
+            .distinctBy { it.collection to it.problem }
         val artifacts = mutableMapOf<String, String>()
         fun transfer(file: Path): String = trace.step("upload") { upload(file) }
         val plannedCases = armPlans.values.flatMap { it.cases }

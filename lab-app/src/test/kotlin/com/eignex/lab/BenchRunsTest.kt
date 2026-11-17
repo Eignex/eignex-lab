@@ -18,6 +18,21 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class BenchRunsTest {
+    @Test fun `bench classification uses the source identity rather than the runtime case identity`() {
+        val case = BenchCase("array/default/7/2", attributes = mapOf(
+            "collection" to "smtlib-qf_abv", "problem" to "family/array",
+            "themes" to "arrays, bitvectors,arrays", "logic" to "QF_ABV", "structure" to "arithmetic"))
+
+        val features = BenchRuns.features(case)
+
+        assertEquals(ProblemFeatures("smtlib-qf_abv", "family/array", listOf("arrays", "bitvectors"), "arithmetic", "QF_ABV"), features)
+        assertEquals(listOf("arrays", "bitvectors"), Scoreboard.values(Dimension.THEME, BenchRuns.problem(case), features, emptyList()))
+    }
+
+    @Test fun `bench cases without classification metadata preserve missing features`() {
+        assertNull(BenchRuns.features(BenchCase("plain")))
+    }
+
     @Test fun `source snapshots are explicit and invalid history contracts fail admission`() {
         assertTrue(BenchRuns.sourceHistory("{}"))
         assertTrue(BenchRuns.sourceHistory("""{"sourceHistory":"full"}"""))
