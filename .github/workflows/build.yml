@@ -127,7 +127,7 @@ jobs:
       - name: Verify Nomad sandbox, autoscaler and runtime pruning scripts
         run: bash deploy/nomad/test_sandbox.sh && bash deploy/nomad/test_autoscaler.sh && bash deploy/nomad/test_prune_runtime.sh
       - name: Verify native metadata interface and receipt compatibility
-        run: ./gradlew :lab-app:test --tests com.eignex.lab.CorpusIndexesTest --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
+        run: ./gradlew :lab-app:test --tests com.eignex.lab.CorpusIndexesTest --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.JobDirViewTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
       - name: Verify cold build scope and cache compatibility
         run: ./gradlew :lab-app:test --tests com.eignex.lab.ColdBuildVerificationTest --tests com.eignex.lab.WarmBuildSourceTest
       - name: Verify interruption deadlines and bounded cost evidence

@@ -12,6 +12,7 @@ import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
 
 import kotlinx.serialization.json.Json
+import java.nio.file.Path
 
 /**
  * What the pages show of a job's directory on the jobs volume, read once before a page is rendered ([read]), so no
@@ -37,7 +38,8 @@ internal class JobDirView(
 
 
         /** Only the files the requested view displays; [NONE] while the jobs volume does not answer ([Volumes.jobFiles]). */
-        fun read(paths: DataPaths, job: Job, showCommands: Boolean = true, failedOnly: Boolean = false): JobDirView {
+        fun read(paths: DataPaths, job: Job, showCommands: Boolean = true, failedOnly: Boolean = false,
+                 entries: (Path, () -> Unit) -> List<MacDirectoryEntries.ListingEntry>? = MacDirectoryEntries::readListing): JobDirView {
             if (Volumes.jobFiles(paths) != null) return NONE
             val dir = paths.jobDir(job.id).toFile()
             val work = job.experiment.work
@@ -47,12 +49,25 @@ internal class JobDirView(
                 else emptyList()
             val terminationIndices = if (singleCase) (indices + 0).distinct() else indices
             val analyze = work.analysis
+            // Resolve the job-directory archive link once. The native reader deliberately refuses directory links.
+            // Small views keep individual probes rather than enumerating a large directory for just two log names.
+            val listed = if (indices.size >= 32) runCatching { dir.toPath().toRealPath() }.getOrNull()?.let { real ->
+                entries(real) { if (Thread.currentThread().isInterrupted) throw InterruptedException() }?.associateBy { it.name }
+            } else null
+            fun isFile(name: String): Boolean {
+                if (listed == null) return dir.resolve(name).isFile
+                val entry = listed[name] ?: return false
+                // Preserve existing output links, which need their target's ordinary metadata.
+                return entry.regular || !entry.directory && dir.resolve(name).isFile
+            }
+            fun bytes(name: String): Long = listed?.get(name)?.takeIf { it.regular }?.bytes ?: dir.resolve(name).length()
             return JobDirView(
-                logs = listOf("setup.log", "job.log").filter { dir.resolve(it).isFile }.toSet(),
+                logs = listOf("setup.log", "job.log").filter(::isFile).toSet(),
                 exit = if (singleCase) dir.resolve("0.exit").takeIf { it.isFile }?.readText()?.trim() else null,
-                terminations = terminationIndices.associateWith { Termination.read(dir.toPath(), it) }.filterValues { it.isNotEmpty() },
+                terminations = terminationIndices.filter { isFile("$it.termination") }
+                    .associateWith { Termination.read(dir.toPath(), it) }.filterValues { it.isNotEmpty() },
                 outputs = indices.flatMap { listOf("$it.out", "$it.err") }
-                    .mapNotNull { name -> dir.resolve(name).takeIf { it.isFile }?.let { name to it.length() } }.toMap(),
+                    .filter(::isFile).associateWith(::bytes),
                 produced = if (singleCase) dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList() else emptyList(),
                 recheck = if (analyze?.kind == AnalyzeSpec.CHECK) dir.resolve(CaseChecks.RESULT).takeIf { it.isFile }
                     ?.let { runCatching { lenientJson.decodeFromString(RecheckResult.serializer(), it.readText()) }.getOrNull() } else null,
