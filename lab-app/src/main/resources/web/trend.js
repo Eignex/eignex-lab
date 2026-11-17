@@ -181,7 +181,7 @@
       ['comparison series', (r.comparisonSeries || ['historical-unqualified']).map(shortSeries).join(', ')],
       ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')' +
         (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],
-      ['proven', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
+      ['fully decided', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
       ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['worse incumbent', r.worse], ['problems', r.problems],
       ['vs previous', r.lost == null ? '–' : '−' + r.lost + ' +' + r.gained + (r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
       ['proof vs previous', r.proofLost == null ? '–' : '−' + r.proofLost + ' +' + r.proofGained],
@@ -192,7 +192,7 @@
     ];
     const group = suite && (r.themes || {})[suite];
     if (group) {
-      if (group.proven != null) rows.unshift([suite + ' proven', Math.round(group.proven * group.problems) + ' of ' + group.problems + ' (' + pct(group.proven) + ')']);
+      if (group.proven != null) rows.unshift([suite + ' fully decided', Math.round(group.proven * group.problems) + ' of ' + group.problems + ' (' + pct(group.proven) + ')']);
       rows.unshift([suite + ' solved', Math.round(group.solved * group.problems) + ' of ' + group.problems + ' (' + pct(group.solved) + ')']);
     }
     tip.replaceChildren();
@@ -242,8 +242,8 @@
     draw(document.getElementById('chart-solved'), [
       {name: 'solved', color: 'var(--series-1)', value: function (r) { return r.solved.value * r.problems; },
         band: function (r) { return [r.solved.low * r.problems, r.solved.high * r.problems]; }},
-      {name: 'proven', color: 'var(--series-2)', value: function (r) { return r.proven * r.problems; }},
-    ], countAxis(most), {height: 260, endLabels: true, title: 'Problems solved and proven per run',
+      {name: 'fully decided', color: 'var(--series-2)', value: function (r) { return r.proven * r.problems; }},
+    ], countAxis(most), {height: 260, endLabels: true, title: 'Problems solved and fully decided per run',
       flagged: function (r) { return r.disagreements > 0; }});
     const top = niceMax(Math.max.apply(null, runs.map(function (r) { return r.par2.high; })));
     draw(document.getElementById('chart-par2'), [
@@ -271,9 +271,9 @@
       const proven = function (r) { const g = (r.themes || {})[s]; return g && g.proven != null ? g.proven * g.problems : null; };
       const seen = runs.map(value).concat(runs.map(proven)).filter(function (v) { return v != null; });
       const size = Math.max.apply(null, runs.map(function (r) { const g = (r.themes || {})[s]; return g ? g.problems : 0; }));
-      draw(plot, [{name: 'solved', color: 'var(--series-1)', value: value}, {name: 'proven', color: 'var(--series-2)', value: proven}],
+      draw(plot, [{name: 'solved', color: 'var(--series-1)', value: value}, {name: 'fully decided', color: 'var(--series-2)', value: proven}],
         rangeAxis(seen, size),
-        {height: 130, endLabels: false, title: s + ' problems solved and proven per run', suite: s,
+        {height: 130, endLabels: false, title: s + ' problems solved and fully decided per run', suite: s,
           flagged: function (r) { return ((r.disagreementsByTheme || {})[s] || 0) > 0; }});
     }
   }

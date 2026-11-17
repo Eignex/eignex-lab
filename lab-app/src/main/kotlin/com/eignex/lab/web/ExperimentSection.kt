@@ -127,7 +127,7 @@ internal fun experimentSection(
                     text("solved")
                 }
                 th(classes = "num") {
-                    text("eligible native proofs")
+                    text("fully decided")
                 }
                 th { text("proof evidence") }
                 th(classes = "num") {

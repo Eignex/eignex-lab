@@ -123,6 +123,74 @@ class OptimumClaimsTest {
     }
 
     @Test
+    fun `integer source contracts qualify checked native claims without the LP exact flag`() {
+        for (format in listOf("XCSP3", "OPB", "WBO", "WCNF")) {
+            fun original(value: String, proven: Boolean = false): CaseResult = edit(point(value, proven)) {
+                put("comparisonControls", buildJsonObject { put("exact", "false") })
+                val policy = if (format == "XCSP3") Policies.XCSP3 else "lab-${format.lowercase()}-independent-exact-point-v1"
+                put("labCheck", JsonObject(getValue("labCheck").jsonObject + ("policy" to JsonPrimitive(policy))))
+            }.copy(problem = problem.copy(format = format))
+
+            val claim = original("7", proven = true)
+
+            assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim).state, format)
+            assertEquals(OptimumAssessment.CONTRADICTED, assessed(claim, original("6")).state, format)
+        }
+    }
+
+    @Test
+    fun `weighted claims require matching exact integer checking receipts`() {
+        val claim = point("7", proven = true).copy(problem = problem.copy(format = "OPB"))
+
+        assertEquals(OptimumAssessment.UNVERIFIED, assessed(claim).state)
+    }
+
+    private fun compiledPoint(value: String, proven: Boolean = false, flatZinc: String = "solve minimize cost;"): CaseResult =
+        edit(point(value, proven)) {
+            val output = "output [show(cost)];"
+            put("compiledInputHashes", buildJsonObject {
+                put("flatzinc", sha256(flatZinc.toByteArray())); put("outputMapping", sha256(output.toByteArray()))
+            })
+            put("compilerIdentity", buildJsonObject {
+                for (key in listOf("executableSha256", "standardLibrarySha256", "solverLibrarySha256", "configurationSha256"))
+                    put(key, "d".repeat(64))
+            })
+            put("comparisonControls", buildJsonObject { put("exact", "false") })
+            put("labCheck", JsonObject(getValue("labCheck").jsonObject + mapOf(
+                "policy" to JsonPrimitive(Policies.MINIZINC),
+                "inputs" to JsonArray(listOf("original.fzn" to flatZinc, "original.ozn" to output).map { (name, content) ->
+                    buildJsonObject { put("path", "/capture/$name"); put("text", content); put("sha256", sha256(content.toByteArray())) }
+                }),
+            )))
+        }.copy(problem = problem.copy(format = "MINIZINC"))
+
+    @Test
+    fun `checked MiniZinc claims bind their compiler and exact compiled frame`() {
+        val claim = compiledPoint("7", proven = true)
+
+        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim).state)
+        assertEquals(OptimumAssessment.CONTRADICTED, assessed(claim, compiledPoint("6")).state)
+        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE,
+            assessed(claim, compiledPoint("6", flatZinc = "constraint bool_eq(true, true); solve minimize cost;")).state)
+    }
+
+    @Test
+    fun `missing or changed compiled receipts cannot qualify MiniZinc optima`() {
+        val claim = compiledPoint("7", proven = true)
+        val noCompiler = edit(claim) { remove("compilerIdentity") }
+        val noInputs = edit(claim) {
+            put("labCheck", JsonObject(getValue("labCheck").jsonObject - "inputs"))
+        }
+        val changed = edit(claim) {
+            put("compiledInputHashes", JsonObject(getValue("compiledInputHashes").jsonObject +
+                ("flatzinc" to JsonPrimitive("f".repeat(64)))))
+        }
+
+        for (incomplete in listOf(noCompiler, noInputs, changed))
+            assertEquals(OptimumAssessment.UNVERIFIED, assessed(incomplete).state)
+    }
+
+    @Test
     fun `a fresh assessment consumes newly supplied evidence and ignores a stale embedded assessment`() {
         val initial = OptimumClaims.qualify(listOf(point("7", proven = true))).single()
         val refreshed = OptimumClaims.qualify(listOf(initial), listOf(point("6"))).single()

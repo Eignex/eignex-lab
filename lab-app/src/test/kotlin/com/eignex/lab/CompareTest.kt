@@ -18,6 +18,35 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CompareTest {
+    @Test
+    fun `satisfaction verdicts count as fully decided without a separate proof flag`() {
+        val cases = listOf(
+            case("a", "sat", """{"kind":"satisfy","feasible":true}"""),
+            case("a", "unsat", """{"kind":"satisfy","feasible":false}"""),
+            case("a", "unknown", """{"kind":"satisfy","feasible":null}"""),
+        )
+
+        val summary = Compare.compare(listOf("a"), cases).arms.single()
+
+        assertEquals(2, summary.solved)
+        assertEquals(summary.solved, summary.proven)
+        assertEquals(false, Outcome.of(cases.first().record)?.proven)
+    }
+
+    @Test
+    fun `optimization incumbents and rejected satisfaction claims are not fully decided`() {
+        val cases = listOf(
+            case("a", "incumbent", """{"kind":"optimize","feasible":true,"objective":3}"""),
+            case("a", "rejected", """{"kind":"satisfy","feasible":true,"labCheck":{"state":"invalid"}}"""),
+            case("a", "error", """{"kind":"satisfy","feasible":true,"command":"ERROR"}"""),
+        )
+
+        val summary = Compare.compare(listOf("a"), cases).arms.single()
+
+        assertEquals(1, summary.solved)
+        assertEquals(0, summary.proven)
+    }
+
     private fun outcome(feasible: Boolean?, objective: Double? = null, proven: Boolean = false, timeMs: Long = 100, maximize: Boolean = false) =
         Outcome(optimize = true, maximize = maximize, feasible, objective, proven, timeMs, budgetMs = 1000, error = false)
 
