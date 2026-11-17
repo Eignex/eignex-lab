@@ -289,6 +289,8 @@ class OptimumClaimsTest {
         val claim = retain(store, point("45650", proven = true))
         val evidence = retain(store, point("43000").copy(seed = 3))
         val guarded = OptimumClaims.qualify(store, store.plans.scoringCases(claim)).single()
+        assertEquals(OptimumClaims.qualify(store, store.plans.cases(claim)).map { OptimumClaims.assessment(it.record) },
+            OptimumClaims.qualify(store, store.plans.pageCases(claim)).map { OptimumClaims.assessment(it.record) })
         val result = requireNotNull(OptimumClaims.assessment(guarded.record))
         assertEquals(OptimumAssessment.CONTRADICTED, result.state)
         assertEquals(evidence, result.evidenceJob)

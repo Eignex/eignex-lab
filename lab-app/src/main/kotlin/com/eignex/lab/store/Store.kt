@@ -439,7 +439,7 @@ internal val SCORING_RECORD = scoringRecord(withWitness = false)
 internal val OPTIMUM_EVIDENCE_RECORD = scoringRecord(withWitness = true)
 
 private fun scoringRecord(withWitness: Boolean) = """CASE WHEN c.record IS NULL OR NOT json_valid(c.record) THEN c.record ELSE
-    json_set(json_remove(c.record, '$.buildProvenance', '$.buildProvenanceRef', '$.attribution'${if (withWitness) "" else ", '$.finalWitness'"}), '$.stats',
+    json_set(json_remove(c.record, '$.buildProvenance', '$.buildProvenanceRef', '$.attribution', '$.labBench.details'${if (withWitness) "" else ", '$.finalWitness'"}), '$.stats',
         json((SELECT json_group_object(key, CASE WHEN key = '$PRODUCER_RECORD'
                   THEN '' || json_object('timeToBestMs', json_extract(value, '$.timeToBestMs')) ELSE value END)
               FROM json_each(c.record, '$.stats')

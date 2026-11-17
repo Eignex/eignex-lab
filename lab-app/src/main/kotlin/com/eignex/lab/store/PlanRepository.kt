@@ -167,6 +167,12 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
         casesWith("c.record", jobId, whole = true)
     }
 
+    /** Page summaries and bench metrics, with witnesses for optimum assessment but without inflating build
+     * provenance or the bench envelope's duplicate solver details. Full records remain available in exports. */
+    fun pageCases(jobId: Long): List<CaseResult> = synchronized(lock) {
+        casesWith(OPTIMUM_EVIDENCE_RECORD, jobId)
+    }
+
     /**
      * At most [limit] of [cases], whole, from case index [from] on. A large job's records, final witnesses included,
      * can run to megabytes each, so an export reads them a page at a time instead of all at once.
