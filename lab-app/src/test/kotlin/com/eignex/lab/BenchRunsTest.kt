@@ -170,6 +170,7 @@ class BenchRunsTest {
         val record = Json.parseToJsonElement(BenchRuns.record(BenchProtocol.json.encodeToString(result), case, 0)).jsonObject
         assertEquals(domain, JsonObject(record - "labBench"))
         assertEquals(result, BenchRuns.result(record.toString()))
+        assertEquals(result, BenchRuns.result(record))
         assertFailsWith<IllegalArgumentException> { BenchRuns.record(BenchProtocol.json.encodeToString(result.copy(caseId = "wrong")), case, 0) }
     }
 
@@ -178,6 +179,7 @@ class BenchRunsTest {
         val failure = BenchResult(case.id, BenchStatus.FAILED, message = "CLI missing")
         val encoded = BenchProtocol.json.encodeToString(failure)
         assertEquals(failure, BenchRuns.result(BenchRuns.record(encoded, case, 1)))
+        assertEquals(failure, BenchRuns.result(Json.parseToJsonElement(encoded)))
         assertFailsWith<IllegalArgumentException> { BenchRuns.record(encoded, case, 0) }
         assertNull(Outcome.of(BenchProtocol.json.parseToJsonElement(encoded)))
     }

@@ -33,7 +33,7 @@ internal fun jobPage(
     nodes: List<JobNode> = emptyList(),
     preparation: List<ExecutionSessionReport> = emptyList(),
     /** What the job's directory holds ([JobDirView.read]); the route reads it before rendering, behind the volume probe. */
-    files: JobDirView = JobDirView.read(status.paths, job),
+    files: JobDirView = JobDirView.read(status.paths, job, showCommands, failedOnly),
     parallelism: Pair<Int, Int>? = null,
 ): Html = page("${job.id} ${job.name} · eignex lab", live = job.status.isActive) {
     val active = job.status.isActive
@@ -286,7 +286,7 @@ private fun benchSection(job: Job, cases: List<CaseResult>, arms: List<PlannedAr
     append(Html("<a href=\"/experiments/") + job.id + Html("/metrics.csv\">metrics CSV</a> · "))
     append(Html("<a href=\"/experiments/") + job.id + Html("/cases\">case records</a> · <a href=\"/jobs/") + job.id + Html("/files\">all files</a></p>"))
     append(Html("<section id=\"bench-results\" data-result-list data-result-limit=\"25\">"))
-    val results = cases.map { it to BenchRuns.result(it.record?.toString()) }
+    val results = cases.map { it to it.record?.let(BenchRuns::result) }
     append(resultFilters("bench", cases.map { it.arm }.distinct(), results.map { (case, result) -> result?.status?.name ?: case.status.name }.distinct()))
     for ((case, result) in results) {
         val path = case.problem.problem

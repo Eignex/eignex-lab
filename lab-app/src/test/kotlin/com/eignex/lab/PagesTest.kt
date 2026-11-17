@@ -138,6 +138,7 @@ class PagesTest {
             application { api(config, store, host) }
 
             val index = client.queuePage()
+            val overview = client.get("/jobs/$done") { header(HttpHeaders.Accept, "text/html") }
             val job = client.get("/jobs/$done?commands") { header(HttpHeaders.Accept, "text/html") }
             val failed = client.get("/jobs/$done?failed") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
             val json = client.get("/jobs/$done")
@@ -146,6 +147,15 @@ class PagesTest {
             assertContains(index, "/jobs/$done?failed\">1 failed</a>")
             assertContains(index, "https://github.com/Eignex/eignex-lab/commit/0123456789abcdef")
             assertContains(job.bodyAsText(), "<code>false</code>")
+            assertFalse(overview.bodyAsText().contains("<code>false</code>"))
+            assertContains(overview.bodyAsText(), "1 failed")
+            assertContains(overview.bodyAsText(), "every case's command")
+            val timings = overview.headers["Server-Timing"]!!.split(", ").associate { metric ->
+                metric.substringBefore(";dur=") to metric.substringAfter(";dur=").toDouble()
+            }
+            assertTrue(timings.keys.containsAll(listOf("job", "cases", "optimum", "preparation", "files", "render", "total")))
+            assertTrue(timings.values.all { it.isFinite() && it >= 0 })
+            assertTrue(timings.getValue("total") >= timings.filterKeys { it != "total" }.values.sum())
             assertFalse(failed.contains("<code>true</code>"))
             assertTrue(json.contentType()?.match(ContentType.Application.Json) == true)
             assertContains(index, "/jobs/$queued")

@@ -87,8 +87,11 @@ internal suspend fun ApplicationCall.respondAction(action: Action) = when (actio
 internal fun ApplicationCall.longParam(name: String = "id"): Long =
     parameters[name]?.toLongOrNull() ?: throw ApiError.Invalid("$name must be a number")
 
-/** The job the `{id}` parameter names: a malformed id is [ApiError.Invalid], an unknown job [ApiError.NotFound]. */
-internal fun ApplicationCall.job(store: Store): Job = longParam().let { id -> store.job(id) ?: throw ApiError.NotFound("no such job $id") }
+/** The job the `{id}` parameter names, with command counts for an overview. Invalid or missing ids keep their API errors. */
+internal fun ApplicationCall.job(store: Store, withCommands: Boolean = true): Job = longParam().let { id ->
+    (if (withCommands) store.job(id) else store.jobsByIds(listOf(id)).singleOrNull())
+        ?: throw ApiError.NotFound("no such job $id")
+}
 
 /** Validate a job path without materializing the job when a route only needs its id. */
 internal fun ApplicationCall.existingJobId(store: Store): Long = longParam().also { id ->

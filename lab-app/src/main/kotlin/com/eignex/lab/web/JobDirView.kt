@@ -36,22 +36,28 @@ internal class JobDirView(
         val NONE = JobDirView()
 
 
-        /** [job]'s directory as the pages show it; [NONE] while the jobs volume does not answer ([Volumes.jobFiles]). */
-        fun read(paths: DataPaths, job: Job): JobDirView {
+        /** Only the files the requested view displays; [NONE] while the jobs volume does not answer ([Volumes.jobFiles]). */
+        fun read(paths: DataPaths, job: Job, showCommands: Boolean = true, failedOnly: Boolean = false): JobDirView {
             if (Volumes.jobFiles(paths) != null) return NONE
             val dir = paths.jobDir(job.id).toFile()
-            val indices = job.commands.map { it.index }.ifEmpty { listOf(0) }
+            val work = job.experiment.work
+            val singleCase = work is Work.Profile || work is Work.Script
+            // The overview does not render command outputs. Archived jobs can have thousands of these files.
+            val indices = if (showCommands) job.commands.filter { !failedOnly || it.status == Status.FAILED }.map { it.index }
+                else emptyList()
+            val terminationIndices = if (singleCase) (indices + 0).distinct() else indices
+            val analyze = work.analysis
             return JobDirView(
                 logs = listOf("setup.log", "job.log").filter { dir.resolve(it).isFile }.toSet(),
-                exit = dir.resolve("0.exit").takeIf { it.isFile }?.readText()?.trim(),
-                terminations = indices.associateWith { Termination.read(dir.toPath(), it) }.filterValues { it.isNotEmpty() },
+                exit = if (singleCase) dir.resolve("0.exit").takeIf { it.isFile }?.readText()?.trim() else null,
+                terminations = terminationIndices.associateWith { Termination.read(dir.toPath(), it) }.filterValues { it.isNotEmpty() },
                 outputs = indices.flatMap { listOf("$it.out", "$it.err") }
                     .mapNotNull { name -> dir.resolve(name).takeIf { it.isFile }?.let { name to it.length() } }.toMap(),
-                produced = dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList(),
-                recheck = dir.resolve(CaseChecks.RESULT).takeIf { it.isFile }
-                    ?.let { runCatching { lenientJson.decodeFromString(RecheckResult.serializer(), it.readText()) }.getOrNull() },
-                analysis = dir.resolve(CompilationReports.ANALYSIS).takeIf { it.isFile }
-                    ?.let { runCatching { lenientJson.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() },
+                produced = if (singleCase) dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList() else emptyList(),
+                recheck = if (analyze?.kind == AnalyzeSpec.CHECK) dir.resolve(CaseChecks.RESULT).takeIf { it.isFile }
+                    ?.let { runCatching { lenientJson.decodeFromString(RecheckResult.serializer(), it.readText()) }.getOrNull() } else null,
+                analysis = if (analyze != null && analyze.kind != AnalyzeSpec.CHECK) dir.resolve(CompilationReports.ANALYSIS).takeIf { it.isFile }
+                    ?.let { runCatching { lenientJson.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() } else null,
             )
         }
     }
