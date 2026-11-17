@@ -6,6 +6,14 @@ unchecked. A valid point supplies feasibility evidence. It supplies neither an o
 proof of a solver's terminal status. Checker policy, implementation identity, source and witness digests accompany
 the verdict; changing a checking rule requires a new policy.
 
+## Solved and fully decided results
+
+A satisfaction problem is fully decided by either SAT or UNSAT; no separate proof flag distinguishes its solved
+and fully decided counts. Optimization counts a feasible incumbent as solved, and requires a qualified optimum
+or infeasibility result to count as fully decided. Rejected claims and errors receive neither credit. Summary and
+trend APIs retain the `proven` field for the fully decided count or share. Native proof claims and independent
+checking receipts remain separate evidence; counting a satisfaction verdict does not create a proof receipt.
+
 ## Native optimum contradictions
 
 `OptimumClaims` compares a native optimum with independently checked better points on the same original source
@@ -22,11 +30,22 @@ reconstructing it from tolerances. A missing or null bound retains exact-optimum
 a direction mismatch or a bound on the wrong side of the incumbent leaves the claim unverified. Derived
 assessments retain the bound separately from the incumbent objective; neither is an independently verified proof.
 
-The whole-source exact integer XCSP3 adapter uses original source costs and its official cost-checking receipt.
+The whole-source integer XCSP3 adapter uses original source costs and its official cost-checking receipt.
 Its semantic identity is SHA-256 of `xcsp3-integer-source-v1`; scope provenance stays separate from equality.
 Its authority is the published original-source optimum contract. This does not identify the internal proof scope
 or supply a missing historical prepared snapshot; those remain unverified. Grid completion supplies no source
 optimum claim. Explicit restricted scopes are never replaced by empty original-source assumptions.
+OPB, WBO and WCNF claims use their original integer costs and matching independent exact-point policies, with
+semantic identities SHA-256 of `<format>-integer-source-v1` (lowercase format). These discrete source contracts
+do not depend on the CLI's LP certification switch `exact`; a matching checked integer objective is mandatory.
+
+MiniZinc integer claims bind the captured compiler, standard and solver libraries, configuration, exact FlatZinc
+and output-mapping hashes. The valid integer-point receipt must retain both compiler outputs with matching bytes
+and digests. Their objective units are `compiled-minizinc`; this qualification assumes the compiler's transformation
+contract and does not independently prove equivalence to the high-level source. Different compiled frames stay
+separate scopes. Missing complete assignments or compiled receipts remain unverified. The sweep enables
+`complete-assignment=true` to retain the scalar integer/Boolean frame required by the checker.
+
 MPS comparisons use `MpsNumericalSemantics` identities and the configured-policy verdict in `LabCheck.mpsChecks`,
 including the reconstructed original objective, original-model scope and explicit empty assumptions. Its exact
 verdict stays separate. Missing numerical declarations do not acquire inferred defaults. Other mapped or restricted

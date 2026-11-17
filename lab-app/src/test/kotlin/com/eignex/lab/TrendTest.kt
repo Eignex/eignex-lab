@@ -136,6 +136,8 @@ class TrendTest {
         assertEquals(1, run.problems)
         assertEquals(4, run.cases)
         assertEquals(0.5, run.solved.value)
+        assertEquals(run.solved.value, run.proven)
+        assertEquals(SuiteShare(1, 0.5, 0.5), run.suites.getValue("s"))
     }
 
     private fun run(store: Store, name: String, solvedOf: List<Boolean>, finish: Boolean = true, first: Int = 0): Long {
@@ -404,7 +406,7 @@ class TrendTest {
         val cache = TrendCache()
         val point = Trend.runs(TrendData.of(store), "sweep", cache).single()
         assertEquals(id, point.job)
-        assertEquals(SuiteShare(1, 1.0, proven = 0.0), point.themes.getValue("sat"))
+        assertEquals(SuiteShare(1, 1.0, proven = 1.0), point.themes.getValue("sat"))
         assertEquals(1, point.disagreements)
         assertEquals(mapOf("sat" to 1), point.disagreementsByTheme)
         assertEquals(listOf(point), Trend.stored(TrendData.of(store), "sweep", cache, missing = mutableListOf()))

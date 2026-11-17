@@ -180,13 +180,47 @@ object OptimumClaims {
                 text(receipt, "scope") != "original-model" || receipt["assumptions"] != JsonArray(emptyList())) return null
             return Scope(sources, semantics, maximize, "original-mps", "source-objective", JsonArray(emptyList()))
         }
-        // The XCSP3 integer adapter reports whole-original-source costs, checked by the official cost checker.
-        // Other semantics, private scopes and mapped objectives require explicit bound checking receipts.
-        if (case.problem.format != "XCSP3" || text(record, "solver") != "klause" ||
-            text(record["comparisonControls"] as? JsonObject, "exact") != "true" ||
+        // Integer-format costs have exact source semantics independently of the LP certification switch.
+        // Private scopes and mapped objectives require explicit bound checking receipts.
+        if (text(record, "solver") != "klause" ||
             record.containsKey("objectiveMapping") || record.containsKey("optimalityScope")) return null
         val maximize = text(record, "maximize")?.toBooleanStrictOrNull() ?: return null
-        return Scope(sources, sha256Hex("xcsp3-integer-source-v1"), maximize, "original-source", "source-objective", JsonArray(emptyList()))
+        val format = case.problem.format
+        if (format == "MINIZINC") {
+            val semantics = miniZincSemantics(record) ?: return null
+            return Scope(sources, semantics, maximize, "compiled-minizinc", "compiled-objective", JsonArray(emptyList()))
+        }
+        if (integerPolicy(format) == null) return null
+        if (format != "XCSP3" && sources.keys != setOf("model")) return null
+        val semantics = if (format == "XCSP3") "xcsp3-integer-source-v1" else "${format.lowercase()}-integer-source-v1"
+        return Scope(sources, sha256Hex(semantics), maximize, "original-source", "source-objective", JsonArray(emptyList()))
+    }
+
+    private fun integerPolicy(format: String): String? = when (format) {
+        "XCSP3" -> Policies.XCSP3
+        "MINIZINC" -> Policies.MINIZINC
+        "OPB", "WBO", "WCNF" -> "lab-${format.lowercase()}-independent-exact-point-v1"
+        else -> null
+    }
+
+    private fun miniZincSemantics(record: JsonObject): String? {
+        val compiled = record["compiledInputHashes"] as? JsonObject ?: return null
+        val compiler = record["compilerIdentity"] as? JsonObject ?: return null
+        val identity = listOf("executableSha256", "standardLibrarySha256", "solverLibrarySha256", "configurationSha256")
+            .map { text(compiler, it)?.takeIf { hash -> HASH.matches(hash) } ?: return null }
+        val check = record["labCheck"] as? JsonObject ?: return null
+        if (text(check, "state") != LabCheck.VALID || text(check, "policy") != Policies.MINIZINC) return null
+        val inputs = check["inputs"] as? JsonArray ?: return null
+        val hashes = listOf("flatzinc" to "original.fzn", "outputMapping" to "original.ozn").map { (key, name) ->
+            val hash = text(compiled, key)?.takeIf { HASH.matches(it) } ?: return null
+            val input = inputs.mapNotNull { it as? JsonObject }.singleOrNull {
+                text(it, "path")?.substringAfterLast('/') == name
+            } ?: return null
+            val content = text(input, "text") ?: return null
+            if (text(input, "sha256") != hash || sha256Hex(content) != hash) return null
+            hash
+        }
+        return sha256Hex((listOf("minizinc-compiled-integer-source-v1") + identity + hashes).joinToString("\n"))
     }
 
     private fun point(case: CaseResult): Point? {
@@ -202,8 +236,8 @@ object OptimumClaims {
         val policy = text(check, "policy")?.takeIf { it.isNotBlank() } ?: return null
         if (text(check, "checkerSha256")?.matches(HASH) != true) return null
         val value = objective(record)?.let { mapping(record)?.apply(it) } ?: return null
-        if (case.problem.format == "XCSP3" && !record.containsKey("optimalityScope")) {
-            if (policy != Policies.XCSP3 || value.d != BigInteger.ONE) return null
+        if (integerPolicy(case.problem.format) != null && !record.containsKey("optimalityScope")) {
+            if (policy != integerPolicy(case.problem.format) || value.d != BigInteger.ONE) return null
         } else if (case.problem.format == "MPS" && !record.containsKey("optimalityScope")) {
             val receipt = check["mpsChecks"] as? JsonObject ?: return null
             val configured = receipt["configured"] as? JsonObject ?: return null

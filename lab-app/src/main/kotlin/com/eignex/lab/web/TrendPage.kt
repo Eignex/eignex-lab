@@ -165,11 +165,11 @@ internal fun trendPage(
                 attributes["aria-labelledby"] = "solved-heading"
                 h2 {
                     attributes["id"] = "solved-heading"
-                    text("Solved and proven")
+                    text("Solved and fully decided")
                 }
                 p(classes = "chart-description") {
                     text(
-                        "Problems out of those each run ran, with seeds and repeats averaged. Band: 95% interval of solved.",
+                        "Problems out of those each run ran, with seeds and repeats averaged. SAT and UNSAT are fully decided; optimization requires an optimum or infeasibility. Band: 95% interval of solved.",
                     )
                 }
                 div(classes = "legend") {
@@ -183,7 +183,7 @@ internal fun trendPage(
                         i {
                             attributes["style"] = "background:var(--series-2)"
                         }
-                        text("proven")
+                        text("fully decided")
                     }
                     span {
                         i(classes = "hollow") {}
@@ -258,7 +258,7 @@ internal fun trendPage(
                                 text("solved")
                             }
                             th(classes = "num") {
-                                text("eligible native proofs")
+                                text("fully decided")
                             }
                             th { text("point / proof evidence") }
                             th(classes = "num") {

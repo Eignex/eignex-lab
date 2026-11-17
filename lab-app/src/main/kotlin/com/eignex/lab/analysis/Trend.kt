@@ -13,7 +13,7 @@ import kotlinx.serialization.Serializable
 data class SuiteShare(
     val problems: Int,
     val solved: Double,
-    /** The share with a proof: an optimum proven or infeasibility shown, as the run's own [TrendRun.proven] counts. */
+    /** Fully decided share: satisfaction verdicts and qualified optimization completions. */
     val proven: Double? = null,
 )
 
@@ -41,6 +41,7 @@ data class TrendRun(
     val cases: Int,
     val problems: Int,
     val solved: Estimate,
+    /** Fully decided share; the wire field retains its historical name. */
     val proven: Double,
     val unsupported: Int,
     val errors: Int,
@@ -324,7 +325,7 @@ object Trend {
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, problems) ->
                 SuiteShare(problems.size, problems.map { (_, runs) -> runs.map { if (it.rank > 0) 1.0 else 0.0 }.average() }.average(),
-                    problems.map { (_, runs) -> runs.map { if (!it.error && (it.proven || it.feasible == false)) 1.0 else 0.0 }.average() }.average())
+                    problems.map { (_, runs) -> runs.map { if (it.decided) 1.0 else 0.0 }.average() }.average())
             }.toSortedMap()
         val themesOf = outcomes.keys.associate { p ->
             (p.referenceKey) to Scoreboard.values(Dimension.THEME, p, features[p.referenceKey], emptyList())
@@ -345,7 +346,7 @@ object Trend {
             cases = own.size,
             problems = stats.problems,
             solved = Estimate(stats.solved.value / n, stats.solved.low / n, stats.solved.high / n),
-            proven = summary.proven / n,
+            proven = outcomes.values.map { runs -> runs.map { if (it.decided) 1.0 else 0.0 }.average() }.average(),
             unsupported = summary.unsupported,
             errors = summary.errors,
             disagreements = comparison.disagreements.size,
@@ -486,8 +487,8 @@ class TrendCache(
                 (confirmation?.let { "/" + confirmationPart(it) + if (confirmationRevision == 0L) "" else "/confirmed-checks-$confirmationRevision" } ?: "")
 
         private const val CONFIRMATION = "confirmation-"
-        /** Benchmark points include workload transitions; solver points retain their existing format. */
-        private fun pointFormat(job: Job): String = if (job.experiment.isBench) "format-7" else "format-4"
+        /** Both formats count satisfaction verdicts as fully decided. */
+        private fun pointFormat(job: Job): String = if (job.experiment.isBench) "format-8" else "format-5"
         private fun confirmationPart(confirmation: Job) = "$CONFIRMATION${confirmation.id}-${confirmation.status}-${confirmation.finishedAt}"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L

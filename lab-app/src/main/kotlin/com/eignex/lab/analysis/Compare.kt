@@ -66,12 +66,15 @@ data class Outcome(
     /** What the solve decided ([Decision]). */
     val decision: Decision get() = Decision.of(feasible, objective, proven)
 
-    /** Solved beats unsolved, and proven (an optimum, or infeasibility) beats merely solved. */
+    /** Satisfaction is decided by either verdict; optimization distinguishes completion from an incumbent. */
     val rank: Int get() = when {
         error || feasible == null -> 0
         proven || feasible == false || !optimize -> 2
         else -> 1
     }
+
+    /** A satisfaction verdict, or a completed optimization result under the effective checking policy. */
+    val decided: Boolean get() = rank == 2
 
     /**
      * The time a comparison charges a decided run: to its best solution, or, for a proof without one (an infeasibility
@@ -169,7 +172,7 @@ data class ArmSummary(
     val label: String,
     val cases: Int,
     val solved: Int,
-    /** Proven optima and proven infeasibility; a satisfied problem counts as solved only. */
+    /** Fully decided cases: SAT, UNSAT, or a qualified optimization completion. */
     val proven: Int,
     /** Solver crashes and problems that failed to load. */
     val errors: Int,
@@ -268,7 +271,7 @@ object Compare {
                 }
             }
             ArmSummary(
-                label, own.size, own.count { it.rank > 0 }, own.count { !it.error && (it.proven || it.feasible == false) },
+                label, own.size, own.count { it.rank > 0 }, own.count { it.decided },
                 own.count { it.error || it.loadError != null }, own.count { it.unsupported != null },
                 score, wins, losses, ties,
                 buildFingerprints = provenanceValues(cases, label, "buildFingerprint"),

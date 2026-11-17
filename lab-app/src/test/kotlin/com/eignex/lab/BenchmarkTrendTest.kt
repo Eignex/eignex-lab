@@ -80,7 +80,7 @@ class BenchmarkTrendTest {
             assertTrue("Dense Level 1" in html && "benchmark-themes" in html)
             assertTrue("1 failures, 0 recoveries; 1 metric regressions" in html)
             assertTrue("/jobs/$second" in html && "dot-4096" in html && "ns/op" in html)
-            assertFalse("Solved and proven" in html || "PAR-2 time" in html || "No run of this schedule" in html)
+            assertFalse("Solved and fully decided" in html || "PAR-2 time" in html || "No run of this schedule" in html)
         }
         assertTrue(store.schedules.launchNow(schedule))
         assertTrue(store.schedules.all().single().launchRequested)
@@ -148,19 +148,21 @@ class BenchmarkTrendTest {
             BenchmarkTrends.summarize(listOf(skipped), "Eignex/other").workloads)
     }
 
-    @Test fun `overview migration refreshes benchmark points without invalidating solver points`() {
+    @Test fun `decision counting migration refreshes both benchmark and solver points`() {
         val store = Store(Files.createTempDirectory("benchmark-overview-upgrade").resolve("lab.db"))
         val benchmark = store.job(run(store, "a".repeat(40)))!!
         val solver = store.job(store.create("solver", "main", emptyList(), experiment = ExperimentSpec("solver")))!!
-        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-7", "format-4"),
+        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-8", "format-7"),
             null, System.currentTimeMillis(), null, emptySet())
         val solverPoint = TrendPoints.Point(TrendCache.version(solver), null, System.currentTimeMillis(), null, emptySet())
+        val oldSolver = TrendPoints.Point(solverPoint.version.replace("format-5", "format-4"),
+            null, System.currentTimeMillis(), null, emptySet())
 
         TrendCache().use { cache ->
             assertTrue(cache.expired(benchmark, oldBenchmark, null))
+            assertTrue(cache.expired(solver, oldSolver, null))
             assertFalse(cache.expired(solver, solverPoint, null))
         }
-        assertTrue("format-4" in solverPoint.version)
     }
 
     @Test fun `old empty benchmark points are invalidated after deploying benchmark trends`() {
