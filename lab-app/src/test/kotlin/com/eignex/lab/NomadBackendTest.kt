@@ -1696,7 +1696,9 @@ class NomadBackendTest {
         assertTrue(store.execution.accepted(id).isEmpty())
     }
 
-    @Test fun `extra substring annotations do not reject or expand an approved preparation`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["ej", "ej/default/7/2"])
+    fun `extra substring annotations do not reject or expand an approved preparation`(runtimeName: String) {
         val spec = ExperimentSpec("annotations", problems = listOf(mapOf("suite" to "s", "reference" to "any")), host = HostPlacement.AUTO)
         val id = setup(1, spec, preparation = true); register()
         val claim = backend().claim(session.id, token, "allocation")!!
@@ -1705,7 +1707,9 @@ class NomadBackendTest {
         val prepared = manifest.bundles.single().copy(sha256 = sha)
         val outputs = mapOf("preparation/${prepared.commit}.zip" to sha)
         store.execution.phase(claim.owner, "preparing")
-        val selected = backend().selectPreparation(claim.owner, listOf(listOf(benchProblem("ej", "miplib"))))
+        val runtime = benchProblem(runtimeName, "miplib").benchCase!!
+        val source = runtime.copy(attributes = runtime.attributes + ("problem" to "ej"))
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(BenchRuns.problem(source))))
         val feature = ProblemFeatures("miplib", "ej", listOf("mip"))
         val preparation = benchPreparation(selected, listOf(prepared), features = listOf(feature, feature.copy(problem = "sutlej")), artifacts = outputs)
         val result = IterationResult(emptyList(), outputs, preparation = preparation)

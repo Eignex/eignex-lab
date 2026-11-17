@@ -181,8 +181,10 @@ Local-only placement, including a required `local` tag or excluded `cloud` tag, 
 ## Repository benchmarks
 
 Bench adapters can declare `themes`, `logic` and `structure` in case attributes. Preparation publishes
-these source labels for theme and class views when the source has no stored classification. Labels do
+these source labels for theme and class views when the source has no stored classification. Approval
+matches their source collection and problem identity independently of runtime variants, seeds and repetitions. Labels do
 not require fetching source bytes during planning and do not certify a source's decidable fragment.
+Classification updates invalidate stored trend points that depend on the source, so their theme views are recomputed.
 
 Submit repository-owned benchmarks with `deploy/lab run experiment.json`. The experiment selects the repository
 and its committed `bench.manifest`; `bench.request.parameters` goes to that adapter. Its manifest owns build tasks

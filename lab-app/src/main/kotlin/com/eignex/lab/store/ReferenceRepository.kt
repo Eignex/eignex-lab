@@ -151,6 +151,7 @@ class ReferenceRepository internal constructor(db: Database, lock: Any) : Reposi
 
     /** Keep the classifier's [features] of each problem, keyed by (collection, problem); a later classification wins. */
     fun putFeatures(features: List<ProblemFeatures>) = synchronized(lock) {
+        if (features.isEmpty()) return@synchronized
         transaction {
             connection.sqlPrepared(
                 "INSERT OR REPLACE INTO problem_features (collection, problem, themes, structure, logic) VALUES (?, ?, ?, ?, ?)",
@@ -159,6 +160,13 @@ class ReferenceRepository internal constructor(db: Database, lock: Any) : Reposi
                     upsert.update(f.collection, f.problem, Json.encodeToString(f.themes), f.structure, f.logic)
                 }
             }
+            val updated = features.map { ProblemKey(it.collection, it.problem) }.toSet()
+            val affected = connection.sqlRows("SELECT job_id, problems FROM trend_points") { row ->
+                row.getLong("job_id").takeIf {
+                    Json.decodeFromString<List<ProblemKey>>(row.getString("problems")).any { it in updated }
+                }
+            }.filterNotNull()
+            for (job in affected) update("DELETE FROM trend_points WHERE job_id = ?", job)
         }
     }
 

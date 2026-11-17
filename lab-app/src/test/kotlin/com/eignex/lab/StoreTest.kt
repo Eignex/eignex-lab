@@ -26,6 +26,20 @@ class StoreTest {
     private fun store() = Store(Files.createTempDirectory("lab").resolve("lab.db"))
 
     @Test
+    fun `source classification updates invalidate only dependent trend points`() {
+        val store = store()
+        val source = ProblemKey("smtlib-qf_abv", "family/array")
+        val other = ProblemKey("other", "family/array")
+        val point = StoredTrendPoint("fixture", null, 1, null, setOf(source))
+        store.trendPoints.save(1, point)
+        store.trendPoints.save(2, point.copy(problems = setOf(other)))
+
+        store.references.putFeatures(listOf(ProblemFeatures(source.collection, source.problem, listOf("arrays", "bitvectors"))))
+
+        assertEquals(setOf(2L), store.trendPoints.load(listOf(1, 2)).keys)
+    }
+
+    @Test
     fun `activity guards ignore paused work without decoding recipes or commands`() {
         val file = Files.createTempDirectory("activity-store").resolve("lab.db")
         val store = Store(file)
