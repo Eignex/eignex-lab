@@ -284,6 +284,42 @@ class OptimumClaimsTest {
     }
 
     @Test
+    fun `unscoped or unvalued claims stay unverified without reading retained witnesses`() {
+        Store(Files.createTempDirectory("unscoped-claims").resolve("lab.db")).let { store ->
+            val claim = point("7", proven = true)
+            val cases = listOf(
+                claim.copy(problem = problem.copy(format = "MINIZINC")),
+                edit(claim) { put("stats", buildJsonObject { put("floatApproximation", "true") }) },
+                edit(claim) { remove("sourceHashes") },
+                edit(claim) { remove("objective"); remove("exactObjective") },
+            )
+            val qualified = OptimumClaims.qualify(store, cases) { error("no comparable claim needs historical witnesses") }
+            assertEquals(OptimumClaims.qualify(cases), qualified)
+            assertTrue(qualified.all { OptimumClaims.assessment(it.record)?.state == OptimumAssessment.UNVERIFIED })
+        }
+    }
+
+    @Test
+    fun `an unscoped claim does not hide a comparable claim for the same problem`() {
+        Store(Files.createTempDirectory("mixed-claims").resolve("lab.db")).let { store ->
+            val claim = point("7", proven = true)
+            val unscoped = edit(claim) { remove("sourceHashes") }
+            val evidence = retain(store, point("6"))
+            val reads = mutableListOf<CaseResult>()
+            val qualified = OptimumClaims.qualify(store, listOf(unscoped, claim, claim.copy(seed = 2))) {
+                reads += it
+                OptimumClaims.retained(store, it)
+            }
+            assertEquals(listOf(claim), reads)
+            assertEquals(OptimumAssessment.UNVERIFIED, OptimumClaims.assessment(qualified.first().record)?.state)
+            for (case in qualified.drop(1)) {
+                assertEquals(OptimumAssessment.CONTRADICTED, OptimumClaims.assessment(case.record)?.state)
+                assertEquals(evidence, OptimumClaims.assessment(case.record)?.evidenceJob)
+            }
+        }
+    }
+
+    @Test
     fun `retained evidence from another job automatically withdraws proof credit`() {
         val store = Store(Files.createTempDirectory("optimum-claims").resolve("lab.db"))
         val claim = retain(store, point("45650", proven = true))
