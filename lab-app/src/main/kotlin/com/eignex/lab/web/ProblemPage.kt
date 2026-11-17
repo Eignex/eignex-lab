@@ -10,63 +10,205 @@ import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
+import kotlinx.html.*
 
 /** One problem: every reference solver's verdict on it, and every time the lab ran it. */
-internal fun problemPage(report: ProblemReport, repoUrl: String): Html = page("${report.problem} · eignex lab", live = report.runs.any { it.status.isActive }, tab = Tab.REFERENCE) {
-    append(Html("<header><h1><code>") + esc(report.problem) + Html("</code></h1><p class=\"muted\">"))
-    append(Html("<a href=\"/references") + query("collection" to report.collection) + Html("\">") + esc(report.collection) + Html("</a></p></header>"))
-    append(Html("<h2>Reference <small>") + report.references.size + Html(" solvers, strongest first</small></h2>"))
-    if (report.references.isEmpty()) {
-        append(Html("<p class=\"muted\">No reference result for this problem.</p>"))
-    } else {
-        append(Html("<div class=\"scroll\"><table><tr><th>solver</th><th>verdict</th><th class=\"num\">objective</th>"))
-        append(Html("<th class=\"num\">dual bound</th><th class=\"num\">time</th><th class=\"num\">budget</th><th>source</th><th>trust</th></tr>"))
-        // What the lab's comparisons take from each row: a stale one nothing, a disputed proof only its solution.
-        val current = report.references.filter { !it.stale }
-        val trusted = current.zip(References.trusted(current)).toMap()
-        for (r in report.references) {
-            val trust = when {
-                r.stale -> "stale: unregistered importer or unchecked legacy policy"
-                trusted[r] != r -> "proof set aside: another solver's solution contradicts it"
-                else -> r.validation?.let { "solution ${it}" } ?: ""
+internal fun problemPage(report: ProblemReport, repoUrl: String): Html =
+    page(
+        "${report.problem} · eignex lab",
+        live = report.runs.any { it.status.isActive },
+        tab = Tab.REFERENCE,
+    ) {
+        header {
+            h1 { code { emit(report.problem) } }
+            p(classes = "muted") {
+                a(href = "/references${query("collection" to report.collection)}") {
+                    emit(report.collection)
+                }
             }
-            append(Html("<tr><td>") + esc(r.solver) + Html("</td><td>") + verdictWord(r) + Html("</td><td class=\"num\">") + (r.objective?.let(::number) ?: "–") + Html("</td>"))
-            append(Html("<td class=\"num\">") + (r.dualBound?.let(::number) ?: "–") + Html("</td>"))
-            append(Html("<td class=\"num\">") + ("%.2f".format(r.elapsedMs / 1000.0)) + Html("s</td><td class=\"num\">") + (r.budgetMs / 1000) + Html("s</td>"))
-            // An unbound row counts only against runs that recorded no source either ([Reference.sourceIdentity]).
-            append(Html("<td>") + (r.sourceIdentity?.let { (Html("<code title=\"") + esc(it) + Html("\">") + (esc(it.take(12))) + Html("</code>")) } ?: Html("<span class=\"muted\">unbound</span>")) + Html("</td>"))
-            append(Html("<td class=\"muted\">") + esc(trust) + Html("</td></tr>"))
         }
-        append(Html("</table></div>"))
-    }
-    append(Html("<h2>Lab runs <small>") + report.totalRuns + Html(" cases"))
-    if (report.runs.size < report.totalRuns) {
-        append(Html(", the newest ") + report.runs.size + Html(" shown: <a href=\"/problem") + query("collection" to report.collection, "problem" to report.problem, "all" to "1") + Html("\">show all</a>"))
-    }
-    append(Html("</small></h2>"))
-    if (report.runs.isEmpty()) {
-        append(Html("<p class=\"muted\">No experiment has run this problem.</p>"))
-    } else {
-        append(Html("<div class=\"scroll\"><table><tr><th>experiment</th><th>arm</th><th>commit</th><th>seed</th><th>verdict</th>"))
-        append(Html("<th class=\"num\">time</th><th>output</th><th>when</th></tr>"))
-        for (run in report.runs) {
-            val outcome = Outcome.of(run.record)
-            val commit = commitLink(repoUrl, run.sha)
-            val time = outcome?.takeIf { it.rank > 0 }?.let { "%.2fs".format(it.timeMs / 1000.0) } ?: "–"
-            append(Html("<tr><td><a href=\"/jobs/") + run.job + Html("\">") + run.job + Html("</a> ") + esc(run.jobName) + Html("</td><td>") + esc(run.arm) + Html("</td>"))
-            append(Html("<td><code>") + commit + Html("</code></td><td>") + (run.seed ?: "–") + (if (run.repeat > 0) " #${run.repeat}" else "") + Html("</td>"))
-            append(Html("<td>") + verdict(outcome, run.status) + Html("</td><td class=\"num\">") + time + Html("</td>"))
-            append(Html("<td><a href=\"/jobs/") + run.job + Html("/files/") + run.case + Html(".out\">out</a> <a href=\"/jobs/") + run.job + Html("/files/") + run.case + Html(".err\">err</a></td>"))
-            append(Html("<td>") + ago(run.createdAt) + Html("</td></tr>"))
+        h2 {
+            text("Reference ")
+            small {
+                emit(report.references.size)
+                text(" solvers, strongest first")
+            }
         }
-        append(Html("</table></div>"))
+        if (report.references.isEmpty()) {
+            p(classes = "muted") {
+                text("No reference result for this problem.")
+            }
+        } else {
+            div(classes = "scroll") {
+                table {
+                    tr {
+                        th { text("solver") }
+                        th { text("verdict") }
+                        th(classes = "num") {
+                            text("objective")
+                        }
+                        th(classes = "num") {
+                            text("dual bound")
+                        }
+                        th(classes = "num") {
+                            text("time")
+                        }
+                        th(classes = "num") {
+                            text("budget")
+                        }
+                        th { text("source") }
+                        th { text("trust") }
+                    }
+                    // What the lab's comparisons take from each row: a stale one nothing, a
+                    // disputed proof only its solution.
+                    val current = report.references.filter { !it.stale }
+                    val trusted = current.zip(References.trusted(current)).toMap()
+                    for (r in report.references) {
+                        val trust =
+                            when {
+                                r.stale -> "stale: unregistered importer or unchecked legacy policy"
+                                trusted[r] != r ->
+                                    "proof set aside: another solver's solution contradicts it"
+                                else -> r.validation?.let { "solution ${it}" } ?: ""
+                            }
+                        tr {
+                            td { emit(r.solver) }
+                            td { emit(verdictWord(r)) }
+                            td(classes = "num") {
+                                emit(r.objective?.let(::number) ?: "–")
+                            }
+                            td(classes = "num") {
+                                emit(r.dualBound?.let(::number) ?: "–")
+                            }
+                            td(classes = "num") {
+                                emit("%.2f".format(r.elapsedMs / 1000.0))
+                                text("s")
+                            }
+                            td(classes = "num") {
+                                emit(r.budgetMs / 1000)
+                                text("s")
+                            }
+                            // An unbound row counts only against runs that recorded no source
+                            // either ([Reference.sourceIdentity]).
+                            td {
+                                emit(
+                                    r.sourceIdentity?.let {
+                                        buildHtml {
+                                            code {
+                                                attributes["title"] = (it)
+                                                emit(it.take(12))
+                                            }
+                                        }
+                                    }
+                                        ?: buildHtml {
+                                            span(classes = "muted") {
+                                                text("unbound")
+                                            }
+                                        },
+                                )
+                            }
+                            td(classes = "muted") {
+                                emit(trust)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        h2 {
+            text("Lab runs ")
+            small {
+                emit(report.totalRuns)
+                text(" cases")
+                if (report.runs.size < report.totalRuns) {
+                    text(", the newest ")
+                    emit(report.runs.size)
+                    text(" shown: ")
+                    a(
+                        href =
+                            "/problem${(query(
+                                            "collection" to report.collection,
+                                            "problem" to report.problem,
+                                            "all" to "1",
+                                        ))
+                                        }",
+                    ) {
+                        text("show all")
+                    }
+                }
+            }
+        }
+        if (report.runs.isEmpty()) {
+            p(classes = "muted") {
+                text("No experiment has run this problem.")
+            }
+        } else {
+            div(classes = "scroll") {
+                table {
+                    tr {
+                        th { text("experiment") }
+                        th { text("arm") }
+                        th { text("commit") }
+                        th { text("seed") }
+                        th { text("verdict") }
+                        th(classes = "num") {
+                            text("time")
+                        }
+                        th { text("output") }
+                        th { text("when") }
+                    }
+                    for (run in report.runs) {
+                        val outcome = Outcome.of(run.record)
+                        val commit = commitLink(repoUrl, run.sha)
+                        val time =
+                            outcome
+                                ?.takeIf { it.rank > 0 }
+                                ?.let { "%.2fs".format(it.timeMs / 1000.0) } ?: "–"
+                        tr {
+                            td {
+                                a(href = "/jobs/${run.job}") {
+                                    emit(run.job)
+                                }
+                                text(" ")
+                                emit(run.jobName)
+                            }
+                            td { emit(run.arm) }
+                            td { code { emit(commit) } }
+                            td {
+                                emit(run.seed ?: "–")
+                                emit(if (run.repeat > 0) " #${run.repeat}" else "")
+                            }
+                            td { emit(verdict(outcome, run.status)) }
+                            td(classes = "num") {
+                                emit(time)
+                            }
+                            td {
+                                a(href = "/jobs/${run.job}/files/${run.case}.out") {
+                                    text("out")
+                                }
+                                text(" ")
+                                a(href = "/jobs/${run.job}/files/${run.case}.err") {
+                                    text("err")
+                                }
+                            }
+                            td { emit(ago(run.createdAt)) }
+                        }
+                    }
+                }
+            }
+        }
     }
-}
 
 /** A reference verdict in a word, without the solver beside it. */
-private fun verdictWord(r: Reference): Html = when {
-    r.feasible == false -> esc("infeasible" + if (r.proven) " (proven)" else "")
-    r.feasible == null -> Html("<span class=\"muted\">unknown</span>")
-    r.objective != null -> esc(if (r.proven) "optimum" else "solution")
-    else -> Html("sat")
-}
+private fun verdictWord(r: Reference): Html =
+    when {
+        r.feasible == false -> htmlText("infeasible${if (r.proven) " (proven)" else ""}")
+        r.feasible == null ->
+            buildHtml {
+                span(classes = "muted") {
+                    text("unknown")
+                }
+            }
+        r.objective != null -> htmlText(if (r.proven) "optimum" else "solution")
+        else -> buildHtml { text("sat") }
+    }

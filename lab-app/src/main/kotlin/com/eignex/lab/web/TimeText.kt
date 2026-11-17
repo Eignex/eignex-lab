@@ -10,38 +10,51 @@ import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
-
-import java.net.URLEncoder
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.Locale
+import kotlinx.html.*
 
 internal val clock = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
 
-private val stamp = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+private val stamp =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
 
 /** A time to come, as a clock time; the exact time is in the tooltip. */
-internal fun clockTime(millis: Long): Html =
-    (Html("<span title=\"") + (stamp.format(Instant.ofEpochMilli(millis))) + Html("\">") + (clock.format(Instant.ofEpochMilli(millis))) + Html("</span>"))
+internal fun clockTime(millis: Long): Html = buildHtml {
+    span {
+        attributes["title"] = (stamp.format(Instant.ofEpochMilli(millis))).toString()
+        emit(clock.format(Instant.ofEpochMilli(millis)))
+    }
+}
 
 /** How long ago, for the last day, then the date; the exact time is in the tooltip. */
 internal fun ago(millis: Long?): Html {
-    if (millis == null) return Html("")
+    if (millis == null) return buildHtml {}
     val seconds = (now() - millis) / 1000
-    val text = if (seconds < 86_400) "${span(seconds)} ago" else clock.format(Instant.ofEpochMilli(millis))
-    return (Html("<span title=\"") + (stamp.format(Instant.ofEpochMilli(millis))) + Html("\">") + text + Html("</span>"))
+    val text =
+        if (seconds < 86_400) "${span(seconds)} ago" else clock.format(Instant.ofEpochMilli(millis))
+    return buildHtml {
+        span {
+            attributes["title"] = (stamp.format(Instant.ofEpochMilli(millis))).toString()
+            emit(text)
+        }
+    }
 }
 
 /** A job's running time as h:mm:ss, its waits in the queue left out. */
-internal fun elapsed(job: Job): String = if (job.startedAt == null) "" else clock(job.elapsedMs(now()) / 1000)
+internal fun elapsed(job: Job): String =
+    if (job.startedAt == null) "" else clock(job.elapsedMs(now()) / 1000)
 
-internal fun clock(seconds: Long) = "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+internal fun clock(seconds: Long) =
+    "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
 
-internal fun span(seconds: Long): String = when {
-    seconds < 60 -> "${seconds}s"
-    seconds < 3600 -> "${seconds / 60}m"
-    seconds < 86_400 -> "${seconds / 3600}h${if (seconds / 60 % 60 > 0) " ${seconds / 60 % 60}m" else ""}"
-    else -> "${seconds / 86_400}d${if (seconds / 3600 % 24 > 0) " ${seconds / 3600 % 24}h" else ""}"
-}
-
+internal fun span(seconds: Long): String =
+    when {
+        seconds < 60 -> "${seconds}s"
+        seconds < 3600 -> "${seconds / 60}m"
+        seconds < 86_400 ->
+            "${seconds / 3600}h${if (seconds / 60 % 60 > 0) " ${seconds / 60 % 60}m" else ""}"
+        else ->
+            "${seconds / 86_400}d${if (seconds / 3600 % 24 > 0) " ${seconds / 3600 % 24}h" else ""}"
+    }

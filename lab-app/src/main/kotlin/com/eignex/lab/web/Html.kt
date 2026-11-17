@@ -1,61 +1,65 @@
 package com.eignex.lab.web
 
-import com.eignex.lab.analysis.*
-import com.eignex.lab.capacity.*
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-import com.eignex.lab.execution.*
-import com.eignex.lab.nomad.*
-import com.eignex.lab.reference.*
-import com.eignex.lab.store.*
-import com.eignex.lab.util.*
-import com.eignex.lab.worker.*
-
 import java.net.URLEncoder
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
-
-internal fun query(vararg params: Pair<String, String?>): String = params
-    .filter { it.second != null }
-    .joinToString(Html("&")) { (key, value) -> "${key}=${URLEncoder.encode(value, Charsets.UTF_8)}" }
-    .let { if (it.isEmpty()) "" else "?${it}" }
-
-internal fun esc(text: String): Html = Html(text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"))
+import kotlinx.html.Tag
+import kotlinx.html.TagConsumer
+import kotlinx.html.stream.appendHTML
 
 /**
- * Markup the pages may put in a page as it is: what [esc] made of text, or what a renderer built of escaped parts. Pages
- * build markup as `Html("<td>") + value + Html("</td>")`, never as a string template, so a value is escaped unless it
- * is already Html: escaping is the default, and leaving it out takes saying the value is markup.
+ * Rendered HTML produced by the kotlinx.html consumer; ordinary values are always escaped by that
+ * consumer.
  */
 @JvmInline
 internal value class Html(val markup: String) : CharSequence by markup {
-    /** [this] followed by [value]: as it is when it is Html, escaped otherwise. */
-    operator fun plus(value: Any?): Html = Html(markup + if (value is Html) value.markup else esc(value.toString()).markup)
+    operator fun plus(value: Any?): Html = buildHtml {
+        emit(this@Html)
+        emit(value)
+    }
 
     override fun toString() = markup
 }
 
-/** [this], or no markup at all. */
-internal fun Html?.orEmpty(): Html = this ?: Html("")
-
-/** [this]'s items as markup, [separator] between them. */
-internal fun <T> Iterable<T>.joinHtml(separator: Html = Html(""), transform: (T) -> Html): Html =
-    Html(joinToString(separator.markup) { transform(it).markup })
-
-/**
- * Builds a page or a part of one from markup only: it takes Html and nothing else, so text reaches a page through [esc]
- * or a template's escaped value ([Html.plus]), never as it is.
- */
-internal class HtmlBuilder {
-    private val out = StringBuilder()
-
-    fun append(markup: Html): HtmlBuilder = apply { out.append(markup.markup) }
-
-    fun build(): Html = Html(out.toString())
+/** Render a fragment without an extra enclosing element or pretty-print whitespace. */
+internal inline fun buildHtml(
+    document: Boolean = false,
+    content: TagConsumer<StringBuilder>.() -> Unit,
+): Html {
+    val output = StringBuilder()
+    if (document) output.append("<!doctype html>")
+    val consumer = output.appendHTML(prettyPrint = false)
+    consumer.content()
+    return Html(consumer.finalize().toString())
 }
 
-/** Markup built by [block] ([HtmlBuilder]). */
-internal inline fun buildHtml(block: HtmlBuilder.() -> Unit): Html = HtmlBuilder().apply(block).build()
+internal fun TagConsumer<*>.text(value: String) = onTagContent(value)
 
+internal fun TagConsumer<*>.comment(value: String) = onTagComment(value)
+
+/**
+ * Only already-rendered fragments bypass escaping; text and attributes use kotlinx.html escaping.
+ */
+internal fun TagConsumer<*>.emit(value: Any?) {
+    if (value is Html) onTagContentUnsafe { +value.markup } else onTagContent(value.toString())
+}
+
+internal fun Tag.emit(value: Any?) = consumer.emit(value)
+
+internal fun htmlText(value: String): Html = buildHtml { text(value) }
+
+internal fun Html?.orEmpty(): Html = this ?: buildHtml {}
+
+internal fun <T> Iterable<T>.joinHtml(
+    separator: Html = buildHtml {},
+    transform: (T) -> Html,
+): Html = buildHtml {
+    forEachIndexed { index, value ->
+        if (index > 0) emit(separator)
+        emit(transform(value))
+    }
+}
+
+internal fun query(vararg params: Pair<String, String?>): String =
+    params
+        .filter { it.second != null }
+        .joinToString("&") { (key, value) -> "$key=${URLEncoder.encode(value, Charsets.UTF_8)}" }
+        .let { if (it.isEmpty()) "" else "?$it" }

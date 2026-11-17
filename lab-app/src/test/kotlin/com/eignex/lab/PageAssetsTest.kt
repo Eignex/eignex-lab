@@ -13,11 +13,11 @@ class PageAssetsTest {
         Files.writeString(directory.resolve("lab.css"), "body { color: red; }")
         Files.writeString(directory.resolve("lab.js"), "window.preview = 1;")
         val assets = PageAssets(directory)
-        assertEquals("body { color: red; }", assets.stylesheet().markup)
+        assertEquals("body { color: red; }", assets.stylesheet())
         assertContains(assets.script("lab.js").markup, "window.preview = 1;")
         Files.writeString(directory.resolve("lab.css"), "body { color: blue; }")
         Files.writeString(directory.resolve("lab.js"), "window.preview = 2;")
-        assertEquals("body { color: blue; }", assets.stylesheet().markup)
+        assertEquals("body { color: blue; }", assets.stylesheet())
         assertContains(assets.script("lab.js").markup, "window.preview = 2;")
     }
 }

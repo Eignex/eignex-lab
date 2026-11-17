@@ -10,19 +10,46 @@ import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
-
 import java.net.URLEncoder
+import kotlinx.html.*
 
-internal fun filesPage(jobId: Long, files: List<FileEntry>): Html = page("${jobId} files · eignex lab") {
-    append(Html("<header><h1><a href=\"/jobs/") + jobId + Html("\">") + jobId + Html("</a> / files</h1></header>"))
-    if (files.isEmpty()) append(Html("<p class=\"muted\">No files yet.</p>"))
-    append(Html("<div class=\"scroll\"><table><tr><th>path</th><th class=\"num\">size</th></tr>"))
-    for (file in files) {
-        append(Html("<tr><td><a href=\"/jobs/") + jobId + Html("/files/") + pathUrl(file.path) + Html("\"><code>") + esc(file.path) + Html("</code></a></td>"))
-        append(Html("<td class=\"num\">") + size(file.bytes) + Html("</td></tr>"))
+internal fun filesPage(jobId: Long, files: List<FileEntry>): Html =
+    page("${jobId} files · eignex lab") {
+        header {
+            h1 {
+                a(href = "/jobs/${jobId}") {
+                    emit(jobId)
+                }
+                text(" / files")
+            }
+        }
+        if (files.isEmpty())
+            p(classes = "muted") {
+                text("No files yet.")
+            }
+        div(classes = "scroll") {
+            table {
+                tr {
+                    th { text("path") }
+                    th(classes = "num") {
+                        text("size")
+                    }
+                }
+                for (file in files) {
+                    tr {
+                        td {
+                            a(href = "/jobs/${jobId}/files/${pathUrl(file.path)}") {
+                                code { emit(file.path) }
+                            }
+                        }
+                        td(classes = "num") {
+                            emit(size(file.bytes))
+                        }
+                    }
+                }
+            }
+        }
     }
-    append(Html("</table></div>"))
-}
 
 internal fun pathUrl(path: String) =
     path.split('/').joinToString("/") { URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20") }

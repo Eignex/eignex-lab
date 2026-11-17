@@ -2,10 +2,12 @@
 serialization = "1.11.0"
 junit = "5.13.3"
 ktor = "3.2.3"
+html = "0.12.0"
 klause = "0.0.1-20261117.021241-1347"
 zstd = "1.5.7-24"
 
 [libraries]
+html = { module = "org.jetbrains.kotlinx:kotlinx-html", version.ref = "html" }
 serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-params = { module = "org.junit.jupiter:junit-jupiter-params" }
