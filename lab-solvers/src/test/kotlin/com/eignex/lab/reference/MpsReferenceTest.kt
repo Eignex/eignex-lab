@@ -32,11 +32,12 @@ class MpsReferenceTest {
         assertTrue(result.proven)
     }
 
-    @Test fun `a reported primal bound without a solution stays undecided`() {
-        val result = result(MpsReference.Claim(MpsReference.Status.LIMIT, 7.0, 6.0, null, null))
+    @Test fun `a native optimum counts without retaining an assignment`() {
+        val result = result(MpsReference.Claim(MpsReference.Status.OPTIMAL, 7.0, 7.0, 0.0, null))
 
-        assertEquals(null, result.feasible)
-        assertFalse(result.proven)
+        assertEquals(true, result.feasible)
+        assertTrue(result.proven)
+        assertEquals(null, result.assignment)
     }
 
     @Test fun `MPS objective orientation comes from the header only`() {

@@ -27,7 +27,7 @@ object MpsReference {
         val infeasible = claim.status == Status.INFEASIBLE
         val feasible = when {
             infeasible -> false
-            claim.primal != null && claim.assignment != null -> true
+            claim.primal != null && claim.status in setOf(Status.OPTIMAL, Status.LIMIT) -> true
             else -> null
         }
         // A solver's tolerance-limited optimal status can retain a nonzero reported primal/dual gap.
