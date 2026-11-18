@@ -36,8 +36,8 @@ eignexPublish { publish.set(false) }
 // Keep the existing verification gate until the lab has a baseline for KBuild's lint rules.
 eignexLint { enabled.set(false) }
 
-// The in-process Klause MPS parser still uses foreign downcalls and the Vector API.
-val parserJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
+// SQLite and Zstandard use native libraries.
+val runtimeJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 
 // The local UI uses test fixtures and a simulated cluster, never the production launcher or a worker.
 tasks.register<JavaExec>("devUi") {
@@ -48,7 +48,7 @@ tasks.register<JavaExec>("devUi") {
     mainClass.set("com.eignex.lab.dev.LocalUiKt")
     javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) })
     maxHeapSize = "512m"
-    jvmArgs(parserJvmArgs)
+    jvmArgs(runtimeJvmArgs)
     systemProperty("lab.ui.assets", file("src/main/resources/web").absolutePath)
     systemProperty("logback.configurationFile", file("src/test/resources/dev-logback.xml").absolutePath)
     args(providers.gradleProperty("uiPort").orElse("8080").get(), layout.buildDirectory.dir("dev-ui").get().asFile.absolutePath)
@@ -57,13 +57,13 @@ tasks.register<JavaExec>("devUi") {
 application {
     applicationName = "eignex-lab"
     mainClass.set("com.eignex.lab.cli.MainKt")
-    applicationDefaultJvmArgs = parserJvmArgs
+    applicationDefaultJvmArgs = runtimeJvmArgs
 }
 
 tasks.withType<Test>().configureEach {
     // Integration tests read committed deployment contracts from the repository.
     systemProperty("lab.repositoryRoot", rootProject.projectDir.absolutePath)
-    jvmArgs(parserJvmArgs)
+    jvmArgs(runtimeJvmArgs)
     val testHome = layout.buildDirectory.dir("test-home")
     systemProperty("user.home", testHome.get().asFile.absolutePath)
     doFirst { testHome.get().asFile.mkdirs() }

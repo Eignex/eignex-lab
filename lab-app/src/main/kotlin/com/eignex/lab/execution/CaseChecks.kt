@@ -121,6 +121,7 @@ class CaseChecks(
 
     /** Check case [index] of [jobId], a case of [problem], from its whole stored record, and keep the verdict. */
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
+        if (!checker.covers(problem.format)) return null
         val text = store.plans.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
         val revision = store.plans.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
