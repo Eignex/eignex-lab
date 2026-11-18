@@ -472,96 +472,11 @@ Repository-specific recipes and named workload sets live with their consumers. B
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
 has no implicit solver executable, build layout, corpus selections or JVM profile classpath.
 
-MiniZinc integer/Boolean points can be replayed through `checker/minizinc.json` using the bench protocol.
-The request contains `record`, `model`, optional `data`, `fzn`, `ozn` and `stdout` as frozen UTF-8 text from one retained solve.
-A record naming a data digest requires the matching original model/data pair.
-The source must match the record's digest. Native stdout and the model witness must retain the same complete
-`flatzinc-integer-v1` comment frame. The adapter adds equality constraints to the original FlatZinc declarations,
-including their aliases and domains, and checks the claimed objective in the original solve variable's units.
-MiniZinc runs with `--compile` only. Its residual fixed constraints go through Choco's official FlatZinc parser and
-`Constraint.isSatisfied()` API. The wrapper disables SAT/LCG, rejects every unfixed or non-integer variable, and
-invokes no search or propagation API.
-Official `--ozn-file` rendering must then reproduce the recorded model witness. Unsupported checks stay unknown.
-The policy validates the retained compiled frame under MiniZinc lowering authority, not optimality or an
-independently certified compiler. Each request has a 24 MiB text limit, one 15-second tool allowance and retained
-inputs, binary identities and bounded process receipts. The SDK result's success means capture completed;
-`details.state` is the validation verdict. Missing original compiler outputs cannot be replaced with another run's.
-Automatic checks use the three files from a single accepted iteration's artifact inventory and verify their hashes
-before passing them to the checker. Historical records without the complete point and compiler outputs stay unsupported.
-For shell-backed transports, pass the JSON parameter map compressed with Zstandard and Base64-encoded as the single
-`capture-zstd-base64` parameter. The frozen case keeps this packed representation until execution. Its 120 KiB limit
-keeps the command below the per-argument limit; decoded input is capped at 24 MiB. A replay may select the last complete
-native solution and omit unrelated record statistics when it retains the original record/stdout hashes and selection
-description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
-The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
-extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
-Policy v8 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
-It declares the no-argument `klause_symmetry` and `klause_redundant` annotations when the captured frame
-uses either without a declaration.
-Tagged constraints remain asserted exactly as captured. Other solver annotations and opaque predicates retain their
-ordinary compiler/provider handling; an unsupported predicate cannot be accepted by discarding it.
-For `klause_subcircuit`, only literal integer arrays indexed from one are translated for the official circuit API.
-Self loops are inactive; the remaining indices are densely relabeled with their original successor edges.
-The resulting fixed `fzn_circuit(0, successors)` is equivalent to one cycle over all active indices. An empty active
-set is true; out-of-range successors or edges into inactive indices are false. Choco checks every remaining cycle
-and uniqueness obligation. The original `checked.fzn` and the derived `provider.fzn` are separately retained and
-hashed, and the process receipt identifies the actual provider input. Unfixed, non-one-based and unknown forms
-remain unsupported. No variable is completed, and neither search nor propagation is invoked.
-The contracts come from [MiniZinc subcircuit](https://github.com/MiniZinc/libminizinc/blob/2.10.1/share/minizinc/std/subcircuit.mzn)
-and [Choco's pinned FlatZinc circuit binding](https://github.com/chocoteam/choco-solver/blob/v5.0.1/parsers/src/main/java/org/chocosolver/parser/flatzinc/ast/FConstraint.java).
-Fixed literal `klause_all_different_int`, `klause_circuit`, `klause_lex_less_int` and `klause_inverse_offsets`
-calls use the corresponding pinned Choco assignment APIs. Named arrays must have explicit literal values;
-metadata and all other constraints stay present. Circuit values are one-based. Inverse offsets name the original
-index sets: forward values subtract the inverse index offset, and inverse values subtract the forward index offset
-before calling the zero-based provider. Asymmetric-offset negative cases check this distinction. Lexicographic
-checking is strict and requires equal nonempty lengths; other shapes stay unsupported. Every translation keeps
-the original and actual derived input, with the same complete-variable guard and no solver completion.
-Fixed strict `diffn`/`fzn_diffn` calls with equal-length literal arrays and positive dimensions bind directly to
-Choco's `Model.diffN` assertion. Redundant cumulative reasoning is disabled because it introduces unfixed helper
-variables; the official non-overlap assertion remains present and is checked by `Constraint.isSatisfied` alongside
-every other parsed constraint. The actual input file remains retained with the original rectangle call. Empty,
-unfixed, unequal-length, zero/negative-size and overflowing-endpoint forms stay unknown. No auxiliary variable
-is propagated or completed to obtain acceptance.
-The Choco parser and core jars are pinned to 5.0.1 and resolved as ordinary build dependencies. Their Maven version
-metadata and actual jar hashes identify the API; the existing XCSP checker dependency is preserved separately.
-The wrapper runs in a bounded child JVM, with its executable and complete classpath jar hashes in the receipt.
-Its Kotlin source delegates all constraint evaluation to the provider's API.
-
-Schemas and behavior: [experiments](../lab-app/src/main/kotlin/com/eignex/lab/domain/Experiments.kt),
-[API](../lab-app/src/main/kotlin/com/eignex/lab/web/Api.kt), [checkers](../lab-solvers/src/main/kotlin/com/eignex/lab/checker/).
-
-OPB (including WBO sources), WBO and WCNF retained points use the independent lab evaluator
-`eignex-lab-weighted-point-1`. It reads the original source, checks every original Boolean coordinate and hard
-constraint, and compares the exact integer objective or sum of violated soft weights. WBO additionally enforces
-cost strictly below `soft:` top; weights at or above top act as hard constraints. Legacy WCNF numeric top and
-headerless `h` clauses are supported. WCNF witnesses may be the retained `v` bit vector or signed DIMACS literals;
-PB witnesses use signed `xN` literals. Missing, duplicate and extra coordinates reject; no omitted variable is
-completed by a solver. Nonlinear PB products are evaluated directly as Boolean conjunctions.
-
-The optional `alteredControl=true` replay adds a second case that flips exactly the first retained coordinate,
-retaining both original and altered records. Its verdict is observed rather than assumed to be a rejection.
-
-The authority is [PB Competition 2010 section 3](https://www.cril.univ-artois.fr/PB10/format.pdf) and the
-[MaxSAT Evaluation input/output specification](https://maxsat-evaluations.github.io/2022/rules.html).
-The evaluator uses Java `BigInteger`, with no Klause parser, acceptance code, presolve or reference solver.
-This avoids finite-width provider costs and validates a point and its cost only, never a lower bound or optimum.
-The receipt binds original plain source bytes, complete witness, claimed objective, policy version, installed lab
-JAR, executable/classpath hashes and the existing process resource envelope. A source hash is required.
-
-Decompression, parsing and arithmetic run in a child with a 256 MiB heap, 10 CPU seconds, 15-second wall deadline and existing
-4 GiB address-space limit on Linux; incomplete execution is `not-run`. Source snapshots and compressed transport are capped at 32 MiB
-(including decompression, with a 64 MiB zstd window); individual numeric tokens at 4096 characters and variables at one million. Exceeding
-input coverage is `unsupported`; malformed source stays unsupported, while a malformed point, hard violation or
-wrong exact cost is `invalid`. Missing source/witness/objective and process failures are never valid checks.
-
-`checker/weighted.json` replays a retained weighted point through the same production dispatcher/adapters.
-Supply frozen UTF-8 `format`, `model` and `record` parameters, optionally packed as `capture-zstd-base64` using the
-same bounded transport described above. It retains the complete source, record and lab receipt as artifacts.
-`details.state` is the verdict; successful SDK capture alone is not acceptance. Capture preparation, checker
-execution and retention belong to the containing job's budget. Repository tests require no external provisioner.
-
-Exact rational MPS point checks and the remote replay contract are specified in
-[Independent source checking](01-source-checking.md#exact-rational-mps). A valid point is feasibility evidence only.
+Source validation uses the official XCSP3 checker, Dolmen for SMT-LIB models and the lab's complete DIMACS SAT
+evaluator. MiniZinc, MPS and weighted Boolean formats retain native results without a lab point check. Native
+optimization completion counts without an independent assignment receipt; checker rejection and checked
+counterexamples still withdraw claims. Assignment validity and native completion are separate evidence.
+See [Independent source checking](01-source-checking.md) for qualification and supported checker boundaries.
 
 DIMACS SAT points use the independent complete original-coordinate policy documented in
 [Independent source checking](01-source-checking.md#original-dimacs-sat-points). Ordinary requested checks and

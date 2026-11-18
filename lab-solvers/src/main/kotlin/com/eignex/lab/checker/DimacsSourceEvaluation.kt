@@ -3,12 +3,19 @@ package com.eignex.lab.checker
 import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*
 
+import kotlinx.serialization.Serializable
+
+/** A SAT point verdict, with the complete original model's checked dimensions. */
+@Serializable
+data class DimacsEvaluation(val state: String, val reason: String, val variables: Int = 0, val constraints: Int = 0)
+
 /** Original CNF evaluation only: no solver, propagation, coordinate repair or Klause dependency. */
 object DimacsSourceEvaluation {
     const val VERSION = "eignex-lab-dimacs-complete-point-2"
+    const val MAX_BYTES = 32 * 1024 * 1024
     const val MAX_WITNESS = 8 * 1024 * 1024
     data class Limits(
-        val bytes: Int = WeightedSourceEvaluation.MAX_BYTES,
+        val bytes: Int = MAX_BYTES,
         val witness: Int = MAX_WITNESS,
         val variables: Int = 1_000_000,
         val clauses: Int = 2_000_000,
@@ -16,7 +23,7 @@ object DimacsSourceEvaluation {
         val token: Int = 32,
     )
 
-    fun check(source: String, witness: String, limits: Limits = Limits()): WeightedEvaluation = try {
+    fun check(source: String, witness: String, limits: Limits = Limits()): DimacsEvaluation = try {
         if (source.length > limits.bytes || witness.length > limits.witness) resource("source or witness size limit")
         val cnf = Tokens(source, comments = true, limits)
         val header = cnf.next() ?: unsupported("missing p cnf header")
@@ -65,9 +72,9 @@ object DimacsSourceEvaluation {
             token = cnf.next()
         }
         if (pending || rows != clauses) unsupported("unterminated clause or declared clause count mismatch")
-        if (firstFalse != null) WeightedEvaluation(LabCheck.INVALID, "original CNF clause $firstFalse is false", variables = variables, constraints = rows)
-        else WeightedEvaluation(LabCheck.VALID, "complete original coordinates and all $rows CNF clauses accepted; SAT point only, no UNSAT or optimality check", variables = variables, constraints = rows)
-    } catch (e: Refusal) { WeightedEvaluation(e.state, e.message.orEmpty()) }
+        if (firstFalse != null) DimacsEvaluation(LabCheck.INVALID, "original CNF clause $firstFalse is false", variables = variables, constraints = rows)
+        else DimacsEvaluation(LabCheck.VALID, "complete original coordinates and all $rows CNF clauses accepted; SAT point only, no UNSAT or optimality check", variables = variables, constraints = rows)
+    } catch (e: Refusal) { DimacsEvaluation(e.state, e.message.orEmpty()) }
 
     private data class Token(val text: String, val line: Int, val lineStart: Boolean)
     /** Bounded tokens with line provenance; comments are permitted only at the start of a source line. */

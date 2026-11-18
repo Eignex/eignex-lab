@@ -3,16 +3,12 @@ package com.eignex.lab.reference
 import com.eignex.lab.checker.*
 import com.eignex.lab.domain.*
 
-import com.eignex.lab.checker.Mps
-import com.eignex.lab.checker.MpsModel
 import java.io.File
 import java.nio.file.Files
-import com.eignex.lab.checker.ObjectiveSense as ObjectiveDirection
 
 /**
  * MPS reference adapter for the native HiGHS binary, with explicit [OPTIONS], single-threaded
- * solving and a wall-clock limit. [MpsWitness] validates its solution file. Rejected or
- * uncheckable claims are retried without presolve within the remaining budget.
+ * solving and a wall-clock limit. Native solution claims and assignments are retained unchecked.
  * Rows use solver key `highs`.
  */
 object HighsReference {
@@ -37,43 +33,22 @@ object HighsReference {
         }
     }
 
-    /** What a cached result depends on: the build, the options, the retry and the validation rules. */
-    fun identity(build: String = version): String = "$build|${options()}|retry=presolve-off|${MpsWitness.VERSION}"
+    /** What a cached result depends on: the build, options and native result interpretation. */
+    fun identity(build: String = version): String = "$build|${options()}|${MpsReference.VERSION}"
 
     private fun options() = OPTIONS.entries.joinToString(",") { "${it.key}=${it.value}" }
 
     fun run(instance: Instance, budget: Budget): ReferenceResult =
         CorpusFiles.withPlainFile(instance.model) { file ->
-            val model = runCatching { Mps.parse(file.readText()) }.getOrNull()
-            val maximize = model?.sense == ObjectiveDirection.MAXIMIZE
-            val attempts = mutableListOf(attempt(file, model, budget.timeoutMillis, presolve = null))
-            val left = budget.timeoutMillis - attempts.first().elapsedMs
-            if (doubtful(
-                    attempts.first(),
-                ) && left >= MIN_RETRY_MS
-            ) {
-                attempts += attempt(file, model, left, presolve = "off")
-            }
-            MpsReference.result(attempts, model, maximize, identity(), options())
+            attempt(file, MpsReference.maximize(file.readText()), budget.timeoutMillis)
         }
 
-    /** Whether a run's claim did not hold up, which a retry without presolve may settle. */
-    private fun doubtful(attempt: MpsAttempt): Boolean {
-        val outcome = attempt.verdict.outcome
-        return attempt.claim.status == MpsWitness.Status.INFEASIBLE ||
-            outcome is MpsWitness.Outcome.Invalid || outcome is MpsWitness.Outcome.Unresolved ||
-            attempt.verdict.stats["proof"]?.startsWith("rejected") == true
-    }
-
-    private fun attempt(file: File, model: MpsModel?, timeoutMs: Long, presolve: String?): MpsAttempt {
+    private fun attempt(file: File, maximize: Boolean, timeoutMs: Long): ReferenceResult {
         val dir = Files.createTempDirectory("eignex-lab-highs").toFile()
         try {
             val solution = File(dir, "solution.sol")
             val options = File(dir, "options.txt")
-            val settings = OPTIONS + listOfNotNull(
-                "log_file" to File(dir, "highs.log").absolutePath,
-                presolve?.let { "presolve" to it },
-            )
+            val settings = OPTIONS + ("log_file" to File(dir, "highs.log").absolutePath)
             options.writeText(settings.entries.joinToString("\n", postfix = "\n") { "${it.key} = ${it.value}" })
             val cmd = listOf(
                 BINARY,
@@ -85,54 +60,8 @@ object HighsReference {
             )
             val (stdout, elapsedMs) = NativeReference.exec(cmd, timeoutMs)
             val claim = parseClaim(stdout, solution.takeIf { it.isFile }?.readText())
-            return MpsAttempt(
-                label = presolve?.let { "presolve $it" } ?: "default",
-                stdout = stdout,
-                elapsedMs = elapsedMs,
-                command = cmd.joinToString(" "),
-                claim = claim,
-                verdict = MpsReference.judge(model, claim, repair),
-                reported = reported(stdout),
-            )
-        } finally {
-            dir.deleteRecursively()
-        }
-    }
-
-    /**
-     * The continuous repair [MpsWitness] asks for: HiGHS on a fixed-integer LP, its solution read back. It solves at a
-     * tolerance tighter than the check, so a completion it returns passes the check on its own numbers.
-     */
-    val repair = MpsWitness.Repair { lp ->
-        if (!available()) return@Repair MpsWitness.RepairResult.Failed("highs is not available")
-        solveFixed(lp, REPAIR_TOLERANCE)
-    }
-
-    private fun solveFixed(lp: String, tolerance: Double): MpsWitness.RepairResult {
-        val dir = Files.createTempDirectory("eignex-lab-highs-repair").toFile()
-        try {
-            val model = File(dir, "fixed.mps").apply { writeText(lp) }
-            val solution = File(dir, "solution.sol")
-            val options = File(dir, "options.txt")
-            options.writeText(
-                "primal_feasibility_tolerance = $tolerance\ndual_feasibility_tolerance = $tolerance\n" +
-                    "log_file = ${File(dir, "highs.log").absolutePath}\n",
-            )
-            val cmd = listOf(
-                BINARY,
-                "--model_file", model.absolutePath,
-                "--options_file", options.absolutePath,
-                "--solution_file", solution.absolutePath,
-                "--time_limit", "${REPAIR_TIMEOUT_MS / MS_PER_SEC}", "--parallel", "off",
-            )
-            val (stdout, _) = NativeReference.exec(cmd, REPAIR_TIMEOUT_MS)
-            val claim = parseClaim(stdout, solution.takeIf { it.isFile }?.readText())
-            val values = claim.assignment
-            return when {
-                claim.status == MpsWitness.Status.INFEASIBLE -> MpsWitness.RepairResult.Infeasible
-                claim.status == MpsWitness.Status.OPTIMAL && values != null -> MpsWitness.RepairResult.Solved(values)
-                else -> MpsWitness.RepairResult.Failed("highs ended ${status(stdout) ?: "without a status"}")
-            }
+            return MpsReference.result(claim, maximize, elapsedMs, stdout, cmd.joinToString(" "),
+                identity(), options(), reported(stdout))
         } finally {
             dir.deleteRecursively()
         }
@@ -143,23 +72,23 @@ object HighsReference {
      * <status>` and `Objective value :`, an optimal LP's objective being its own dual bound. The solution comes from
      * the solution file's `# Columns` section, absent when HiGHS wrote none.
      */
-    fun parseClaim(stdout: String, solution: String?): MpsWitness.Claim {
+    fun parseClaim(stdout: String, solution: String?): MpsReference.Claim {
         val lines = stdout.lineSequence().map { it.trim() }.toList()
         fun field(name: String) = lines.lastOrNull { Regex("""^$name\s*:?\s+\S""").containsMatchIn(it) }
             ?.replace(Regex("""^$name\s*:?\s+"""), "")?.trim()
         fun number(name: String) = field(name)?.substringBefore(' ')?.toDoubleOrNull()?.takeIf { it.isFinite() }
         val text = status(stdout).orEmpty()
         val status = when {
-            text.startsWith("optimal") -> MpsWitness.Status.OPTIMAL
-            text.startsWith("infeasible") -> MpsWitness.Status.INFEASIBLE
-            "limit" in text || "interrupt" in text -> MpsWitness.Status.LIMIT
-            else -> MpsWitness.Status.UNKNOWN
+            text.startsWith("optimal") -> MpsReference.Status.OPTIMAL
+            text.startsWith("infeasible") -> MpsReference.Status.INFEASIBLE
+            "limit" in text || "interrupt" in text -> MpsReference.Status.LIMIT
+            else -> MpsReference.Status.UNKNOWN
         }
         val primal = number("Primal bound") ?: number("Objective value")
         val lp = field("Model status") != null && field("Primal bound") == null
-        val dual = number("Dual bound") ?: primal.takeIf { lp && status == MpsWitness.Status.OPTIMAL }
+        val dual = number("Dual bound") ?: primal.takeIf { lp && status == MpsReference.Status.OPTIMAL }
         val gap = field("Gap")?.substringBefore('%')?.trim()?.toDoubleOrNull()?.div(PERCENT)
-        return MpsWitness.Claim(status, primal, dual, gap, solution?.let(::solutionValues))
+        return MpsReference.Claim(status, primal, dual, gap, solution?.let(::solutionValues))
     }
 
     private fun status(stdout: String): String? = stdout.lineSequence().map { it.trim() }
@@ -188,9 +117,4 @@ object HighsReference {
     private const val PERCENT = 100.0
     private const val VERSION_WAIT_MS = 10_000L
 
-    /** A retry with less than this left would only time out. */
-    private const val MIN_RETRY_MS = 5_000L
-    private const val REPAIR_TIMEOUT_MS = 30_000L
-
-    private const val REPAIR_TOLERANCE = 1e-9
 }

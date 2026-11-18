@@ -170,7 +170,7 @@ internal fun trendPage(
                 }
                 p(classes = "chart-description") {
                     text(
-                        "Problems out of those each run ran, with seeds and repeats averaged. SAT and UNSAT are fully decided; optimization requires an optimum or infeasibility. Band: 95% interval of solved.",
+                        "Problems out of those each run ran, with seeds and repeats averaged. SAT and UNSAT are fully decided; optimization requires a native optimum or infeasibility. Independent proof verification is separate. Band: 95% interval of solved.",
                     )
                 }
                 div(classes = "legend") {
@@ -331,7 +331,7 @@ internal fun trendPage(
                                     emit(run.contradictedOptima)
                                     text(" contradicted; ")
                                     emit(run.unverifiedOptima)
-                                    text(" unverified scope/check")
+                                    text(" native only")
                                 }
                                 td(classes = "num") {
                                     emit(run.unsupported)

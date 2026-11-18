@@ -21,6 +21,7 @@ import io.ktor.serialization.kotlinx.json.DefaultJson
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -65,6 +66,14 @@ class LabCheckTest {
         val parsed = LabCheck.parse(historical)!!
 
         assertTrue(parsed.inputs.isEmpty())
+    }
+
+    @Test
+    fun `retired MPS receipts retain their full policy details`() {
+        val details = Json.parseToJsonElement("""{"exact":{"state":"valid"},"semanticsQualified":true,"sourceSha256":"retained"}""").jsonObject
+        val historical = LabCheck("lab-mps-declared-rational-v2", LabCheck.VALID, "checked", "retired", mpsChecks = details)
+
+        assertEquals(details, LabCheck.parse(historical.json())!!.mpsChecks)
     }
 
     @Test

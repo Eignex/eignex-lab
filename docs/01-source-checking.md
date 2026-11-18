@@ -1,169 +1,59 @@
 # 1. Independent source checking
 
-The lab owns checking authority separately from a producer's acceptance. `SourceChecker` binds a retained complete
-witness and objective to original model bytes through `sourceHashes`; source mismatches and missing artifacts stay
-unchecked. A valid point supplies feasibility evidence. It supplies neither an optimum, a bound nor an independent
-proof of a solver's terminal status. Checker policy, implementation identity, source and witness digests accompany
-the verdict; changing a checking rule requires a new policy.
+The lab checks retained assignments against original source bytes through pinned external checkers: the official
+XCSP3 solution checker and Dolmen for SMT-LIB models. The only lab-owned evaluator is the complete DIMACS SAT
+assignment check. MiniZinc, MPS, OPB, WBO and WCNF have no lab assignment checker. Reference solver reports retain
+their native claims; MPS assignments are neither evaluated nor repaired by the lab.
+
+`SourceChecker` binds a complete witness and objective to original model bytes through `sourceHashes`; source
+mismatches and missing artifacts stay unchecked. A valid point supplies feasibility evidence, never an optimum,
+bound or independent proof of a solver's terminal status. Checker policy, implementation identity, source and
+witness digests accompany each verdict. Changing a checking rule requires a new policy. Historical receipts remain
+stored under their original policies, including retired checker receipts; removal does not rewrite evidence.
 
 ## Solved and fully decided results
 
-A satisfaction problem is fully decided by either SAT or UNSAT; no separate proof flag distinguishes its solved
-and fully decided counts. Optimization counts a feasible incumbent as solved, and requires a qualified optimum
-or infeasibility result to count as fully decided. Rejected claims and errors receive neither credit. Summary and
-trend APIs retain the `proven` field for the fully decided count or share. Native proof claims and independent
-checking receipts remain separate evidence; counting a satisfaction verdict does not create a proof receipt.
+A satisfaction problem is fully decided by either SAT or UNSAT. Optimization counts an incumbent as solved and a
+native optimum or infeasibility result as fully decided. Missing, unsupported or indeterminate point checks do not
+suppress native completion credit. A checker rejection or a scope-matched checked counterexample withdraws the
+rejected claim. Float approximations require source acceptance and supply no original-source completion claim.
+Summary and trend APIs retain the `proven` field for the fully decided count or share. Native completion claims
+and independent receipts remain separate evidence: counting completion does not create a checked proof.
 
 ## Native optimum contradictions
 
-`OptimumClaims` compares a native optimum with independently checked better points on the same original source
-and all its dependencies, effective semantics, objective sense and units, and assumptions. Exact rational affine
-maps transport reported objectives into original units before comparison; malformed exact values never fall back
-to rounded display values. A point must carry a valid independent receipt with matching source and witness digests
-and an identified checker. Failed, unsupported and incomplete checks provide no counterexample.
+`OptimumClaims` compares native optima with independently checked better points on matching original sources,
+effective semantics, objective sense, units and assumptions. Exact rational affine maps transport objectives into
+original units; malformed exact values never fall back to rounded display values. Points require valid independent
+receipts with matching source and witness digests and an identified checker. Failed or incomplete checks supply no
+counterexample. The default integer source contract is XCSP3 under its official cost-checking policy and semantic
+identity SHA-256 of `xcsp3-integer-source-v1`. It does not depend on the producer's LP `exact` switch.
 
-A gap optimum carries `optimalityBound` in exact original units: a lower bound for minimization, an upper bound
-for maximization, in the record's objective direction. Only a checked point strictly beyond that bound contradicts
-the claim; a better incumbent inside the gap or equal to the bound does not. The producer's `optimalityTolerance`
-describes the declared and effective gap, but the assessment compares the actual proved bound without rounding or
-reconstructing it from tolerances. A missing or null bound retains exact-optimum semantics. A malformed bound,
-a direction mismatch or a bound on the wrong side of the incumbent leaves the claim unverified. Derived
-assessments retain the bound separately from the incumbent objective; neither is an independently verified proof.
+Mapped or restricted claims declare `optimalityScope` with schema `original-source-optimum-v1`,
+`semanticsSha256`, original objective `{sense, units, identity}` and `assumptions`. Optional
+`objectiveMapping` contains exact `scale` and `offset`. The independent point receipt must bind that complete
+scope and original objective in `labCheck.optimumEvidence`. An original-model point check alone cannot validate
+additional assumptions.
 
-The whole-source integer XCSP3 adapter uses original source costs and its official cost-checking receipt.
-Its semantic identity is SHA-256 of `xcsp3-integer-source-v1`; scope provenance stays separate from equality.
-Its authority is the published original-source optimum contract. This does not identify the internal proof scope
-or supply a missing historical prepared snapshot; those remain unverified. Grid completion supplies no source
-optimum claim. Explicit restricted scopes are never replaced by empty original-source assumptions.
-OPB, WBO and WCNF claims use their original integer costs and matching independent exact-point policies, with
-semantic identities SHA-256 of `<format>-integer-source-v1` (lowercase format). These discrete source contracts
-do not depend on the CLI's LP certification switch `exact`; a matching checked integer objective is mandatory.
+A gap optimum carries `optimalityBound` in exact original units: lower for minimization, upper for maximization.
+Only a checked point strictly beyond that bound contradicts the claim. A better incumbent inside the gap or equal
+to the bound does not. `optimalityTolerance` describes the producer's declared and effective gap; comparison uses
+the retained bound without reconstructing it from tolerances. Missing or null bounds retain exact-optimum semantics.
+Malformed bounds, scope or objective metadata leave independent assessment unavailable.
 
-MiniZinc integer claims bind the captured compiler, standard and solver libraries, configuration, exact FlatZinc
-and output-mapping hashes. The valid integer-point receipt must retain both compiler outputs with matching bytes
-and digests. Their objective units are `compiled-minizinc`; this qualification assumes the compiler's transformation
-contract and does not independently prove equivalence to the high-level source. Different compiled frames stay
-separate scopes. Missing complete assignments or compiled receipts remain unverified. The sweep enables
-`complete-assignment=true` to retain the scalar integer/Boolean frame required by the checker.
+Derived `labOptimumClaim` assessments distinguish `contradicted`, `unverified` and `no-counterexample`.
+An unverified assessment describes missing independent evidence and leaves native completion counting. Absence of
+counterexamples supplies no independent proof. A contradiction withdraws optimum credit while retaining point
+validity and raw native flags. Stored claims and receipts remain unchanged. Retained checked points from other
+jobs, seeds, revisions and arms can contradict a claim without machine or runtime equality. Proof-performance
+comparisons retain their execution controls. Summaries, trends and confirmations share these assessments.
+Receipt revisions and finished evidence jobs invalidate cached scoring records and trends across store connections.
 
-MPS comparisons use `MpsNumericalSemantics` identities and the configured-policy verdict in `LabCheck.mpsChecks`,
-including the reconstructed original objective, original-model scope and explicit empty assumptions. Its exact
-verdict stays separate. Missing numerical declarations do not acquire inferred defaults. Other mapped or restricted
-claims declare `optimalityScope` with schema `original-source-optimum-v1`, `semanticsSha256`, an original objective
-`{sense, units, identity}`, and `assumptions`. Optional `objectiveMapping` contains exact `scale` and `offset`.
-Their point receipt must bind that complete scope and original objective in `labCheck.optimumEvidence`; an original
-model point check alone cannot validate additional assumptions.
-
-Derived `labOptimumClaim` assessments distinguish `contradicted`, `unverified`, and `no-counterexample`. A
-contradiction withdraws optimum credit while retaining point validity and raw native flags. Missing scope or a lack
-of a scope-matched independent check of the claimed point remains unverified. No counterexample in supplied evidence leaves the native
-proof independently unverified; no reference search runs during assessment. Claims and checker receipts remain
-unchanged in storage and raw case exports.
-
-The job/comparison pages, statistics, CSV qualification, scheduled confirmations and sweep trends consume derived
-assessments. Retained checked points from other jobs, seeds, revisions and arms can contradict a claim; runtime or
-machine equality is unnecessary for a mathematical counterexample. Proof-performance comparisons retain their
-stricter matched execution controls. Contradicted or unverified optima cannot earn proof credit or confirmation
-gains. Counts distinguish checked points, raw native claims, contradicted optima and unverified claims. Cached
-trends refresh when checking receipts or finished evidence jobs change. SQLite receipt revisions invalidate both
-raw scoring records and derived trends across runner/API connections, including rechecks of ended jobs.
-
-`bench/optimum-claims.json` replays bounded retained case/check receipts through the production assessment and
-qualification paths, retaining the original captures, origins, assessments and summary. It accepts `captures` with
-`{origin: {job}, case, expected}` entries; expected is `point`, `contradicted`, `unverified` or `no-counterexample`.
-The existing `capture-zstd-base64` transport admits larger captures. Expectations assert observed states without
-supplying checking authority. Replay performs neither assignment checking nor reference search; the retained
-independent receipts provide point evidence.
-
-## Exact rational MPS
-
-`RationalMpsChecker` evaluates every numeric spelling under explicit policies. Its `mpsChecks` receipt retains
-`lab-mps-exact-rational-v2` separately from `lab-mps-declared-rational-v2`; no fraction/decimal routing or implicit
-legacy tolerance selection occurs. `MpsChecker` remains available as the separately identified legacy solchecker.
-Both independent rational policies identify their evaluator source, configured-policy source and executing JAR
-SHA-256 when packaged. No Klause parser, model, arithmetic, point validator or solver supplies checking authority.
-
-The declared policy requires `numericalSemantics` with schema `mps-decimal-semantics-v1` and complete declared and
-effective contracts: decimal literal authority, absolute/relative tolerance, default integer/real endpoints, exact
-integrality and exact objective equality. Unsupported, malformed or absent declarations yield an unqualified
-`unknown` configured verdict while retaining the exact verdict. Nothing infers semantics from witness spelling,
-solver flags or an absent override banner.
-
-Configured row slack is `max(absolute, relative * max(abs(bound), sum(abs(term activity))))`; column-bound slack
-uses the finite bound magnitude. Each row side is checked separately. Default bound overrides apply only to wholly
-unranged columns; explicit source bounds remain authoritative. Integrality and objective equality stay exact,
-including nonterminating rational witnesses. The zero-tolerance policy permits no slack.
-
-`MpsNumericalSemantics` canonicalizes effective rational values for policy identity. The receipt binds effective
-semantics, independent checker rules, original source/witness SHA-256, claimed and reconstructed objectives, source
-objective sense, original units, whole-model scope and empty assumptions. Comparison identity excludes witness
-spelling and includes the source, effective policy, checker rules and objective scope. Matching identities permit
-point comparisons only; they supply no optimum, bound or proof authority. Historical records and strict rejections
-remain intact. A conditional replay may add a separately identified supplemental policy with `semanticsOrigin`,
-without replacing a retained declaration or qualifying an absent historical one. Supplemental receipts identify
-`declarationOrigin=conditional-replay` and `semanticsQualified=false`; their top-level verdict stays `unknown` while
-the separate configured verdict records the conditional evaluation. Only a supported actual record declaration has
-`declarationOrigin=solver-record` and `semanticsQualified=true`.
-
-The exact route evaluates every declared column and row from the original source. It uses normalized BigInteger
-rationals, never floating conversion, decimal approximation or point repair. Its row, bound, integrality and
-objective tolerances are zero, including for non-terminating values such as `1/3`. A rounded decimal that fails an
-exact row stays invalid. Omitted or duplicate coordinates stay incomplete/malformed; omitted coordinates never
-silently become zero. All coordinates must be supplied, including columns whose objective coefficient is zero.
-
-Supported MPS sections are `NAME`, optional `OBJSENSE`, `ROWS`, `COLUMNS`, optional `RHS`, `RANGES`, `BOUNDS`,
-and `ENDATA`, in that order. Whitespace field layouts (including ordinary fixed-column records without spaces in
-names), one/two row-value pairs, decimal/exponent literals and rational witness values are supported. Missing RHS
-means zero; the first `N` row is the objective and later `N` rows are free. `RANGES` follows the standard L/G/E
-signed-range rules. The objective is its row activity minus its RHS offset, in original source units for either
-MIN or MAX; maximizing does not negate the reported objective. These conventions follow
-[Gurobi's MPS specification](https://docs.gurobi.com/projects/optimizer/en/current/reference/fileformats/modelformats.html)
-and [IBM's MPS record specification](https://www.ibm.com/docs/en/cofz/12.9.0?topic=standard-records-in-mps-format).
-
-Real columns default to `[0,+infinity)`. Integer marker columns default to `[0,1]` unless explicit bounds replace
-that default; supported bound records are LO, UP, FX, FR, MI, PL, BV, LI and UI. BV/LI/UI also declare integrality.
-BV permits a blank fourth field or a decimal/exponent value exactly equal to one, including `1` and `1.0`, as
-specified by [IBM's integer-variable MPS extension](https://www.ibm.com/docs/en/icos/22.1.1?topic=extensions-integer-variables-in-mps-files).
-It always declares binary bounds `[0,1]` and exact integrality. Other BV values, fraction-valued source metadata,
-extra fields and malformed values stay unknown; redundant values on FR/MI/PL remain rejected.
-
-The v2 policy identities include this BV input coverage. Retained v1 receipts are historical evidence under their
-original identities; they are not aliases for v2 and do not acquire v2 comparison identities. A checking-only
-migration preserves the original receipts, source/witness/declaration hashes and all checking costs before recording
-fresh checks. Neither policy changes tolerances or supplies optimum authority.
-Unknown sections, semi-continuous bounds, indicators, multiple RHS/range/bound vectors and ambiguous extensions
-are unsupported, never ignored as a route to acceptance. Syntax/section errors produce `unknown` with `parser
-failure`, unsupported features/resource limits produce `unsupported`, deadline expiry produces `not-run` with
-`timeout`, incomplete witnesses produce `unknown`, and checked violations produce `invalid`. Only invalid withdraws
-a claim. Cancellation propagates instead of publishing a point.
-
-The evaluator owns its temporary parsed model and discards it after the call. Plain or zstd-decoded source is capped
-at 16 MiB (zstd window capped at 64 MiB), witness at 8 MiB, line at 8,190 characters, numeric token at 4,095 characters,
-decimal scale at +/-4,095, rows and columns at 50,000 each, terms at 200,000, rational operands/intermediates at
-16,384 bits (arithmetic temporaries at most 32,769 bits), operations at 2,000,000 and elapsed evaluation at 120 seconds. Deadline/cancellation checks occur while
-reading, parsing, checking each coordinate and evaluating each term; each BigInteger operation has bounded operands.
-Source lookup remains the existing hash-bound `SourceLocator` contract. A resource refusal supplies no verdict on
-feasibility. Receipts record limits, operation count, arithmetic policy and elapsed time without inventing child
-process resource receipts for this in-process evaluator.
-
-`bench/mps-replay.json` is the repository-owned remote replay manifest. It accepts a bounded list of original records,
-source paths/digests and expected exact verdicts, plus optional configured expectations and supplemental semantics origins. It freezes those inputs, runs the production router and `SourceChecker`,
-and retains original record, source copy, effective control record and full `LabCheck`. A replay validates only those
-retained artifacts; it cannot validate an absent historical capture. Campaign manifests and narratives belong outside
-source; link the tracker/PR and lab receipts for a particular qualification.
-
-## Weighted Boolean points
-
-The independently owned OPB/WBO/WCNF route evaluates the original source, requires complete Boolean coordinates,
-and uses BigInteger objectives and violated soft weights, including WBO's strict top threshold. It supplies point
-and cost evidence only. No Klause parser, acceptance code or reference solver provides checking authority.
-
-Its child owns decompression and checking within a 256 MiB heap, 10 CPU seconds, 15-second wall deadline and the
-existing Linux 4 GiB address-space envelope. Source/witness, policy/version, JAR/classpath identities, complete
-request/input artifacts and existing process receipts bind each check. Incomplete execution stays unchecked.
-The [weighted replay contract and source specifications](runs.md) define supported layouts, additional input limits
-and the distinction between SDK capture success and an actual checking verdict. `checker/weighted.json` owns that
-route; `bench/mps-replay.json` owns exact MPS replay.
+`bench/optimum-claims.json` replays bounded retained receipts through assessment and scoring, with no assignment
+checking or reference search. Its `captures` entries contain `{origin: {job}, case, expected}`; expected is
+`point`, `contradicted`, `unverified` or `no-counterexample`. Expected states assert observations without
+supplying checking authority. The bounded `capture-zstd-base64` transport is shared with DIMACS replay: compressed
+parameters are limited to 120 KiB and decoded text to 24 MiB.
 
 ## Original DIMACS SAT points
 

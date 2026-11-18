@@ -1,68 +1,47 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.domain.*
-
-import com.eignex.klause.formats.mps.Mps
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class MpsReferenceTest {
-    // Flow f through a link only a switched-on binary b opens (f <= 1e6 b), demand 0.5.
-    private val link = Mps.parse(
-        """
-        NAME link
-        ROWS
-         N obj
-         L cap
-         G dem
-        COLUMNS
-            M1 'MARKER' 'INTORG'
-            b obj 1 cap -1000000
-            M2 'MARKER' 'INTEND'
-            f obj -1 cap 1
-            f dem 1
-        RHS
-            rhs dem 0.5
-        BOUNDS
-         UP bnd b 1
-         UP bnd f 10
-        ENDATA
-        """.trimIndent(),
-    )
+    private fun result(claim: MpsReference.Claim) = MpsReference.result(claim, false, 10, "output", "command", "test", "", emptyMap())
 
-    private fun attempt(
-        label: String,
-        status: MpsWitness.Status,
-        primal: Double?,
-        values: Map<String, Double>?,
-    ): MpsAttempt {
-        val claim = MpsWitness.Claim(status, primal, primal, gap = null, assignment = values)
-        return MpsAttempt(label, "", 1_000, label, claim, MpsWitness.judge(link, claim, repair = null), emptyMap())
+    @Test fun `native assignments are retained without repair or source evaluation`() {
+        val result = result(MpsReference.Claim(MpsReference.Status.OPTIMAL, 7.0, 7.0, 0.0, mapOf("x" to 0.999999)))
+
+        assertEquals(true, result.feasible)
+        assertEquals(7.0, result.objective)
+        assertTrue(result.proven)
+        assertEquals("x 0.999999\n", result.assignment)
+        assertEquals("unchecked", result.stats["validation"])
     }
 
-    @Test
-    fun `a retry that finds a checked solution should refute the first run infeasibility`() {
-        val infeasible = attempt("default", MpsWitness.Status.INFEASIBLE, null, null)
-        val found = attempt("presolve off", MpsWitness.Status.LIMIT, 0.5, mapOf("b" to 1.0, "f" to 0.5))
+    @Test fun `an optimal status with an open reported gap remains an incumbent`() {
+        val result = result(MpsReference.Claim(MpsReference.Status.OPTIMAL, 10000.0, 9999.5, 0.00005, mapOf("x" to 1.0)))
 
-        val result = MpsReference.result(listOf(infeasible, found), link, maximize = false, "highs|test", "")
-        val alone = MpsReference.result(listOf(infeasible), link, maximize = false, "highs|test", "")
-
-        assertEquals(listOf(true, 0.5, false), listOf(result.feasible, result.objective, result.proven))
-        assertTrue(result.stats.getValue("refuted").startsWith("default claimed infeasible"))
-        assertEquals("b 1.0\nf 0.5\n", result.assignment)
-        assertEquals(listOf(false, true), listOf(alone.feasible, alone.proven))
+        assertEquals(true, result.feasible)
+        assertFalse(result.proven)
     }
 
-    @Test
-    fun `an infeasibility claim contradicted by any solution from the same solver should not be a proof`() {
-        val infeasible = attempt("default", MpsWitness.Status.INFEASIBLE, null, null)
-        val rejected = attempt("presolve off", MpsWitness.Status.OPTIMAL, -0.8, mapOf("b" to 8e-7, "f" to 0.8))
+    @Test fun `native infeasibility needs no assignment`() {
+        val result = result(MpsReference.Claim(MpsReference.Status.INFEASIBLE, null, null, null, null))
 
-        val result = MpsReference.result(listOf(infeasible, rejected), link, maximize = false, "highs|test", "")
+        assertEquals(false, result.feasible)
+        assertTrue(result.proven)
+    }
 
-        assertEquals(listOf(null, false), listOf(result.feasible, result.proven))
-        assertTrue(result.stats.getValue("contradicted").startsWith("default claimed infeasible"))
+    @Test fun `a reported primal bound without a solution stays undecided`() {
+        val result = result(MpsReference.Claim(MpsReference.Status.LIMIT, 7.0, 6.0, null, null))
+
+        assertEquals(null, result.feasible)
+        assertFalse(result.proven)
+    }
+
+    @Test fun `MPS objective orientation comes from the header only`() {
+        assertTrue(MpsReference.maximize("NAME test\n* note\nOBJSENSE\n MAX\nROWS\n N obj\n"))
+        assertTrue(MpsReference.maximize("NAME test\nOBJSENSE MAXIMIZE\nROWS\n"))
+        assertFalse(MpsReference.maximize("NAME test\nROWS\n N OBJSENSE\n"))
     }
 }

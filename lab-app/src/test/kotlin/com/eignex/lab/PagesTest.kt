@@ -202,7 +202,7 @@ class PagesTest {
 
             assertContains(page, "<td class=\"best\">3")
             assertFalse("<td class=\"best\">3*" in page)
-            assertContains(page, "1 unverified scope/check")
+            assertContains(page, "1 native only")
             assertContains(page, "1 worse")
         }
     }

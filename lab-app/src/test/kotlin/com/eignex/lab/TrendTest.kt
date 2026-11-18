@@ -154,7 +154,7 @@ class TrendTest {
     }
 
     @Test
-    fun `source unbound native proof losses stay unverified in trend and confirmation`() {
+    fun `native completion losses count without independent point checks`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val first = run(store, "sweep@aaa", listOf(true))
         val second = run(store, "sweep@bbb", listOf(true))
@@ -178,10 +178,10 @@ class TrendTest {
         store.finish(confirmation, Status.DONE)
         val result = Trend.runs(TrendData.of(store), "sweep").last()
         assertEquals(0, result.lost)
-        assertEquals(0, result.proofLost)
+        assertEquals(1, result.proofLost)
         assertEquals(0, result.objectiveLost)
         assertEquals(confirmation, result.confirmJob)
-        assertEquals(0, result.confirmedProofLost)
+        assertEquals(1, result.confirmedProofLost)
         assertEquals(0, result.confirmedLost)
     }
 

@@ -21,7 +21,7 @@ object DimacsCheckBench : BenchSuite {
 
     override fun plan(request: BenchRequest): List<BenchCase> {
         require(request.parameters.values.sumOf { it.length.toLong() } <= 120 * 1024) { "Use bounded capture-zstd-base64 transport for larger captures" }
-        val parameters = MiniZincCheckBench.parameters(request.parameters)
+        val parameters = FrozenCaptures.parameters(request.parameters)
         require(parameters.keys == setOf("captures")) { "Supply captures only" }
         val text = parameters.getValue("captures")
         require(text.length <= 12 * 1024 * 1024) { "Capture list exceeds 12 MiB" }

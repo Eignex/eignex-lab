@@ -12,7 +12,7 @@ eignexBuild {
 dependencies {
     implementation(project(":lab-bench"))
     implementation(project(":lab-model"))
-    // The source checkers and reference solvers, and the XCSP3 checker and Choco they alone need.
+    // The source checkers and reference solvers, and the upstream XCSP3 checker they alone need.
     implementation(project(":lab-solvers"))
     // Capacity grants and the provider calls the cloud capacity functions and the capacity adapter share.
     implementation(project(":lab-capacity"))

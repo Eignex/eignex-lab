@@ -120,7 +120,7 @@ data class Outcome(
                 // objective, and an undecided solve proved nothing.
                 objective = if (rejected || reportedFeasible == false) null else objective,
                 proven = !rejected && !approximation && proven && reportedFeasible != null &&
-                    optimum?.state !in setOf(OptimumAssessment.CONTRADICTED, OptimumAssessment.UNVERIFIED),
+                    optimum?.state != OptimumAssessment.CONTRADICTED,
                 timeToBestMs = if (rejected) null else timeToBest,
                 budgetMs = field("budgetMs")?.longOrNull ?: 0,
                 error = field("command")?.content == "ERROR" || stat(fields, "referenceError") != null,
@@ -221,9 +221,7 @@ object Compare {
      * small is the machine's noise, and the time split alone would call it a win.
      */
     fun points(a: Outcome, b: Outcome): Double {
-        val unverifiedProof = listOf(a, b).any { it.optimumAssessment?.state == OptimumAssessment.UNVERIFIED }
-        fun rank(o: Outcome) = if (unverifiedProof && o.optimize && o.feasible == true) minOf(o.rank, 1) else o.rank
-        val ar = rank(a); val br = rank(b)
+        val ar = a.rank; val br = b.rank
         if (ar != br) return if (ar > br) 1.0 else 0.0
         if (ar == 0) return 0.0
         val (oa, ob) = a.objective to b.objective

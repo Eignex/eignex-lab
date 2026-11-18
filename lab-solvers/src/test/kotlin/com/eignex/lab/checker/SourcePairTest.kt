@@ -123,7 +123,7 @@ class SourcePairTest {
         val seen = mutableListOf<Pair<String, String?>>()
         val adapter = object : FormatChecker {
             override val format = "MINIZINC"
-            override val policy = Policies.MINIZINC
+            override val policy = "fixture-pair-v1"
             override val checker = "fake"
             override fun check(case: CheckCase, work: File): Verdict {
                 seen += case.sources.model.readText() to case.sources.data?.readText()

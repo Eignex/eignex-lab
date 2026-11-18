@@ -123,13 +123,10 @@ object Confirm {
                     x.optimize != y.optimize || x.maximize != y.maximize) continue
                 val ox = objective(ca); val oy = objective(cb)
                 fun proof(o: Outcome, value: Exact?) = o.feasible == false ||
-                    (o.optimize && o.proven && o.feasible == true && value != null &&
-                        o.optimumAssessment?.state != OptimumAssessment.UNVERIFIED)
+                    (o.optimize && o.proven && o.feasible == true && value != null)
                 val px = proof(x, ox); val py = proof(y, oy)
-                if (listOf(x, y).none { it.optimumAssessment?.state == OptimumAssessment.UNVERIFIED }) {
-                    if (px && !py) pl++
-                    if (!px && py) pg++
-                }
+                if (px && !py) pl++
+                if (!px && py) pg++
                 if (x.optimize && x.feasible == true && ox != null && oy != null) {
                     val cmp = oy.compareTo(ox) * if (x.maximize) -1 else 1
                     if (cmp > 0) ol++
