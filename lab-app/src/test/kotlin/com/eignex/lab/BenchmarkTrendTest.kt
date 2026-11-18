@@ -148,14 +148,14 @@ class BenchmarkTrendTest {
             BenchmarkTrends.summarize(listOf(skipped), "Eignex/other").workloads)
     }
 
-    @Test fun `decision counting migration refreshes both benchmark and solver points`() {
+    @Test fun `native completion migration refreshes both benchmark and solver points`() {
         val store = Store(Files.createTempDirectory("benchmark-overview-upgrade").resolve("lab.db"))
         val benchmark = store.job(run(store, "a".repeat(40)))!!
         val solver = store.job(store.create("solver", "main", emptyList(), experiment = ExperimentSpec("solver")))!!
-        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-8", "format-7"),
+        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-9", "format-8"),
             null, System.currentTimeMillis(), null, emptySet())
         val solverPoint = TrendPoints.Point(TrendCache.version(solver), null, System.currentTimeMillis(), null, emptySet())
-        val oldSolver = TrendPoints.Point(solverPoint.version.replace("format-5", "format-4"),
+        val oldSolver = TrendPoints.Point(solverPoint.version.replace("format-6", "format-5"),
             null, System.currentTimeMillis(), null, emptySet())
 
         TrendCache().use { cache ->
