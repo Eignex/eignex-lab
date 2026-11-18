@@ -5,13 +5,14 @@ import com.eignex.lab.reference.*
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /** A complete derived input submitted to a checker, bound to its process receipt by canonical [path] and [sha256]. */
 @Serializable
 data class CheckedInput(val path: String, val sha256: String, val text: String)
 
 /**
- * The lab's own verdict on one Klause case's solution claim: an established external checker run over the original
+ * The lab's own verdict on one Klause case's solution claim: an external checker or the complete CNF evaluator run over the original
  * source and the final witness the case's record kept. It is stored beside the case (the `lab_check` column), never in
  * the bench's record, and every reader sees it as the record's `labCheck` ([com.eignex.lab.store.Store]).
  */
@@ -23,7 +24,7 @@ data class LabCheck(
     val state: String,
     /** Why, in the checker's own words where it gave any. */
     val reason: String,
-    /** The external tool, as named in [policy]. */
+    /** The checking implementation, as named in [policy]. */
     val checker: String,
     val checkerVersion: String? = null,
     /** SHA-256 of the checker binary or jar that ran; null when none ran. */
@@ -42,7 +43,7 @@ data class LabCheck(
     val resourceReceipts: List<ToolResourceReceipt> = emptyList(),
     /** Complete derived checker inputs retained after scratch cleanup; historical checks keep none. */
     val inputs: List<CheckedInput> = emptyList(),
-    val mpsChecks: MpsPolicyChecks? = null,
+    val mpsChecks: JsonObject? = null,
     val optimumEvidence: ScopedPointEvidence? = null,
 ) {
     fun json(): String = JSON.encodeToString(serializer(), this)
@@ -70,8 +71,5 @@ data class LabCheck(
 /** The lab's checking policies, one per format and checker version: a new checker or a new rule is a new policy. */
 object Policies {
     val XCSP3 = "lab-xcsp3-solution-checker-${Xcsp3Checker.VERSION}-v1"
-    const val MPS_DECLARED = "lab-mps-declared-rational-v2"
-    const val MPS_EXACT = "lab-mps-exact-rational-v2"
-    const val MINIZINC = "lab-minizinc-choco-integer-point-v8"
     const val SMTLIB = "lab-smtlib-dolmen-0.10-v2"
 }

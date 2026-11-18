@@ -15,7 +15,7 @@ object OptimumReplay : BenchSuite {
 
     override fun plan(request: BenchRequest): List<BenchCase> {
         require(request.parameters.values.sumOf { it.length.toLong() } <= 120 * 1024)
-        val parameters = MiniZincCheckBench.parameters(request.parameters)
+        val parameters = FrozenCaptures.parameters(request.parameters)
         require(parameters.keys == setOf("captures")) { "Supply captures only" }
         val text = parameters.getValue("captures")
         require(text.length <= 12 * 1024 * 1024)
@@ -34,7 +34,7 @@ object OptimumReplay : BenchSuite {
     }
 
     override fun run(case: BenchCase, context: BenchContext): BenchResult {
-        val parameters = MiniZincCheckBench.parameters(case.parameters)
+        val parameters = FrozenCaptures.parameters(case.parameters)
         val captures = Json.parseToJsonElement(parameters.getValue("captures")).jsonArray
         val report = context.outputDirectory.resolve("report").toFile().apply { mkdirs() }.toPath()
         report.resolve("captures.json").writeText(captures.toString())

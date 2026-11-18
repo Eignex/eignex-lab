@@ -24,10 +24,10 @@ class HighsReferenceTest {
         val claim = HighsReference.parseClaim(stdout, solution)
 
         assertEquals(
-            MpsWitness.Claim(MpsWitness.Status.OPTIMAL, 924.0, 924.0, 0.0, mapOf("x1" to 1.0, "x2" to 0.0)),
+            MpsReference.Claim(MpsReference.Status.OPTIMAL, 924.0, 924.0, 0.0, mapOf("x1" to 1.0, "x2" to 0.0)),
             claim,
         )
-        assertEquals(MpsWitness.Claim(MpsWitness.Status.LIMIT, null, null, null, null), limited)
+        assertEquals(MpsReference.Claim(MpsReference.Status.LIMIT, null, null, null, null), limited)
         assertEquals(listOf(-464.75314286, -464.75314286), listOf(lp.primal, lp.dual))
     }
 }

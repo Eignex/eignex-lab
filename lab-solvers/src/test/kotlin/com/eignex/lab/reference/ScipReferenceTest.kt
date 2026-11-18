@@ -18,7 +18,7 @@ class ScipReferenceTest {
         val claim = ScipReference.parseClaim(out)
 
         assertEquals(
-            MpsWitness.Claim(MpsWitness.Status.OPTIMAL, 924.0, 924.0, 0.0, mapOf("x243" to 1.0, "x282" to 1.5e-7)),
+            MpsReference.Claim(MpsReference.Status.OPTIMAL, 924.0, 924.0, 0.0, mapOf("x243" to 1.0, "x282" to 1.5e-7)),
             claim,
         )
     }
@@ -32,7 +32,7 @@ class ScipReferenceTest {
                 "Gap                : infinite\nno solution available\n",
         )
 
-        assertEquals(MpsWitness.Claim(MpsWitness.Status.INFEASIBLE, null, null, null, null), infeasible)
-        assertEquals(MpsWitness.Claim(MpsWitness.Status.LIMIT, null, 4.0, null, null), limited)
+        assertEquals(MpsReference.Claim(MpsReference.Status.INFEASIBLE, null, null, null, null), infeasible)
+        assertEquals(MpsReference.Claim(MpsReference.Status.LIMIT, null, 4.0, null, null), limited)
     }
 }

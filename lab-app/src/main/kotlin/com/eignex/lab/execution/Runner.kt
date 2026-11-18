@@ -27,7 +27,7 @@ class Runner(
     private val selfUpdater: SelfUpdater? = null,
     sourceUrl: (String) -> String = { Repositories.source(it) },
 ) {
-    internal val checks = CaseChecks(store, sourceChecker, config::jobDir, ::log)
+    internal val checks = CaseChecks(store, sourceChecker, ::log)
     @Volatile private var stopping = false
     private val schedules = Schedules(config.paths, config.workers, config.retry, store, sourceUrl) { stopping }
     private val confirmations = Confirmations(config.local, config.paths, store)

@@ -29,7 +29,7 @@ object Checkers {
     fun of(paths: DataPaths): SourceChecker {
         val dolmen = Dolmen(dir(paths))
         return SourceChecker(
-        adapters = listOf(Xcsp3Checker(), RationalMpsChecker(), MiniZincChecker(), SmtChecker(dolmen::binary), OpbChecker(), WboChecker(), WcnfChecker(), DimacsChecker()),
+        adapters = listOf(Xcsp3Checker(), SmtChecker(dolmen::binary), DimacsChecker()),
         locator = SourceLocator(paths.corpusDir.toFile(), fixtures = fixtures(paths), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))
@@ -85,7 +85,6 @@ data class RecheckResult(val job: Long, val cases: Int, val checked: Int, val st
 class CaseChecks(
     private val store: Store,
     checker: () -> SourceChecker,
-    private val jobDirectory: ((Long) -> java.nio.file.Path)? = null,
     private val log: (Long, String) -> Unit,
 ) {
     private val checker by lazy(checker)
@@ -122,6 +121,7 @@ class CaseChecks(
 
     /** Check case [index] of [jobId], a case of [problem], from its whole stored record, and keep the verdict. */
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
+        if (!checker.covers(problem.format)) return null
         val text = store.plans.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
         val revision = store.plans.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
@@ -132,24 +132,10 @@ class CaseChecks(
             checkNotNull(SharedInputs.environment()) { "LAB_SHARED_INPUT_ROOT is not set in this service's environment" }
                 .acquire(inputs, required = required)
         } catch (failure: Exception) { throw SharedCheckInputUnavailable(failure) } else null
-        val check = lease.use {
-            val frame = if (problem.format.equals("MINIZINC", ignoreCase = true)) frame(jobId, index) else null
-            checker.check(problem, record, revision, frame)
-        } ?: return null
+        val check = lease.use { checker.check(problem, record, revision) } ?: return null
         store.plans.caseCheck(jobId, index, check.json())
         log(jobId, "case $index: ${check.policy}: ${check.state}: ${check.reason}")
         return check
-    }
-
-    private fun frame(jobId: Long, index: Int): MiniZincFrame? {
-        val root = jobDirectory?.invoke(jobId) ?: return null
-        val prefix = "cases/$index/out/report/"
-        val names = listOf("model.fzn", "model.ozn", "cli.stdout").map { prefix + it }
-        // Only the iterations that ran case [index] can hold its report; read just those results.
-        val accepted = store.execution.acceptedIndices(jobId).asSequence().filter { (_, indices) -> index in indices }
-            .mapNotNull { (iteration, _) -> store.execution.accepted(jobId, iteration) }
-            .firstOrNull { result -> names.all { it in result.artifacts } } ?: return null
-        return MiniZincFrame.read(root, prefix, accepted.artifacts)
     }
 
     /**

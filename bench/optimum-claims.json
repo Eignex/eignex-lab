@@ -2,6 +2,6 @@
   "main": "com.eignex.lab.analysis.OptimumReplayKt",
   "classpath": ["lab-app/build/install/eignex-lab/lib/*"],
   "buildTasks": [":lab-app:installDist"],
-  "jvmArgs": ["-Xmx384m", "--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector"],
+  "jvmArgs": ["-Xmx384m", "--enable-native-access=ALL-UNNAMED"],
   "runtime": {"java": 25, "tools": [], "environment": {}}
 }

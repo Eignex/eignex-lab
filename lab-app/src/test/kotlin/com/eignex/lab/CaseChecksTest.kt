@@ -18,8 +18,35 @@ import java.io.File
 import java.nio.file.Files
 import kotlinx.serialization.json.*
 import kotlin.test.*
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 
 class CaseChecksTest {
+    @ParameterizedTest
+    @ValueSource(strings = ["MINIZINC", "MPS", "OPB", "WBO", "WCNF"])
+    fun `formats without a checker retain their native record through ordinary checks and rechecks`(format: String) {
+        val root = Files.createTempDirectory("native-checks")
+        try {
+            val store = Store(root.resolve("lab.db"))
+            val spec = ExperimentSpec("native", bench = BenchSpec("bench.json", sourceValidation = true))
+            val problem = Problem("fixture", "native", format = format)
+            val id = store.create("native", "main", emptyList(), experiment = spec)
+            store.plan(id, listOf(PlannedArm(Arm("native", emptyMap()), "revision")), listOf(problem),
+                Experiments.cases(1, 1, emptyList()), listOf("retained native claim" to 1L))
+            val record = """{"solver":"klause","kind":"optimize","feasible":true,"proven":true,"objective":7}"""
+            store.caseRecord(id, 0, record)
+            store.commandFinished(id, 0, 0)
+            val checks = CaseChecks(store, { Checkers.of(Config(dataDir = root).paths) }) { _, _ -> }
+
+            checks.afterCase(id, 0)
+            checks.await(id)
+            assertNull(checks.check(id, 0, problem))
+            assertEquals(0, checks.recheck(id) { false }.checked)
+            assertEquals(record, store.plans.caseRecordText(id, 0))
+            assertTrue(requireNotNull(Outcome.of(store.plans.cases(id).single().record)).proven)
+        } finally { root.toFile().deleteRecursively() }
+    }
+
     @Test fun `historical source checks retain the original mirror after repository defaults change`() {
         val root = Files.createTempDirectory("checker-history")
         try {

@@ -177,7 +177,7 @@
     const rows = opts.rows ? opts.rows(r) : [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
       ['checked points', r.checkedPoints], ['native proof claims', r.nativeProofClaims],
-      ['contradicted optima', r.contradictedOptima], ['unverified scope/check', r.unverifiedOptima],
+      ['contradicted optima', r.contradictedOptima], ['native only', r.unverifiedOptima],
       ['comparison series', (r.comparisonSeries || ['historical-unqualified']).map(shortSeries).join(', ')],
       ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')' +
         (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],

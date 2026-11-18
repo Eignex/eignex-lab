@@ -94,7 +94,7 @@ object NomadCoordinatorCli {
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
         val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
-        val checks = CaseChecks(store, { Checkers.of(config.paths) }, config::jobDir) { job, line ->
+        val checks = CaseChecks(store, { Checkers.of(config.paths) }) { job, line ->
             config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n")
         }
         val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }

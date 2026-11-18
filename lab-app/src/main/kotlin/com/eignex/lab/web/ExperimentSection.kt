@@ -83,7 +83,7 @@ internal fun experimentSection(
                 "below): an unchecked solver report counts as a solution or proof just as a source-checked witness does, and a ",
             )
             text(
-                "check that rejected or could not decide a claim counts it as no solution. Solved, proven and score differences ",
+                "check that rejects a claim counts it as no solution; unavailable checks retain native claims. Solved, fully decided and score differences ",
             )
             text(
                 "between them may measure the checking, not the solver; compare claims between arms of one policy.",
@@ -207,7 +207,7 @@ internal fun experimentSection(
                                 emit(summary.contradictedOptima)
                                 text(" contradicted; ")
                                 emit(summary.unverifiedOptima)
-                                text(" unverified scope/check")
+                                text(" native only")
                             }
                         }
                         if (summary.contradictedOptima > 0)
@@ -216,9 +216,9 @@ internal fun experimentSection(
                                 text(" contradicted optima")
                             }
                         if (summary.unverifiedOptima > 0)
-                            span(classes = "PARTIAL") {
+                            span {
                                 emit(summary.unverifiedOptima)
-                                text(" unverified scope/check")
+                                text(" native only")
                             }
                     }
                     td(classes = "num") {

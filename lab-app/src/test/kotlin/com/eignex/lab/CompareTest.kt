@@ -157,7 +157,7 @@ class CompareTest {
     }
 
     @Test
-    fun `a source unbound native optimum remains unverified`() {
+    fun `a source unbound native optimum counts as completion and remains independently unverified`() {
         val cases = listOf(
             case("a", "p", """{"kind":"optimize","feasible":true,"objective":10,"proven":true,"budgetMs":1000}"""),
             case("b", "p", """{"kind":"optimize","feasible":true,"objective":8,"budgetMs":1000}"""),
@@ -167,7 +167,7 @@ class CompareTest {
         assertTrue(comparison.disagreements.isEmpty())
         assertEquals(1, comparison.arms.first().nativeProofClaims)
         assertEquals(1, comparison.arms.first().unverifiedOptima)
-        assertEquals(0, comparison.arms.first().proven)
+        assertEquals(1, comparison.arms.first().proven)
     }
 
     @Test

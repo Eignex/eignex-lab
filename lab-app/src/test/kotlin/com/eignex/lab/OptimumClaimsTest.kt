@@ -124,10 +124,10 @@ class OptimumClaimsTest {
 
     @Test
     fun `integer source contracts qualify checked native claims without the LP exact flag`() {
-        for (format in listOf("XCSP3", "OPB", "WBO", "WCNF")) {
+        for (format in listOf("XCSP3")) {
             fun original(value: String, proven: Boolean = false): CaseResult = edit(point(value, proven)) {
                 put("comparisonControls", buildJsonObject { put("exact", "false") })
-                val policy = if (format == "XCSP3") Policies.XCSP3 else "lab-${format.lowercase()}-independent-exact-point-v1"
+                val policy = Policies.XCSP3
                 put("labCheck", JsonObject(getValue("labCheck").jsonObject + ("policy" to JsonPrimitive(policy))))
             }.copy(problem = problem.copy(format = format))
 
@@ -139,55 +139,16 @@ class OptimumClaimsTest {
     }
 
     @Test
-    fun `weighted claims require matching exact integer checking receipts`() {
-        val claim = point("7", proven = true).copy(problem = problem.copy(format = "OPB"))
+    fun `native optima without a checker count as completion without independent verification`() {
+        for (format in listOf("MINIZINC", "MPS", "OPB", "WBO", "WCNF")) {
+            val claim = edit(point("7", proven = true)) { remove("labCheck"); remove("finalWitness") }
+                .copy(problem = problem.copy(format = format))
+            val qualified = OptimumClaims.qualify(listOf(claim)).single()
 
-        assertEquals(OptimumAssessment.UNVERIFIED, assessed(claim).state)
-    }
-
-    private fun compiledPoint(value: String, proven: Boolean = false, flatZinc: String = "solve minimize cost;"): CaseResult =
-        edit(point(value, proven)) {
-            val output = "output [show(cost)];"
-            put("compiledInputHashes", buildJsonObject {
-                put("flatzinc", sha256(flatZinc.toByteArray())); put("outputMapping", sha256(output.toByteArray()))
-            })
-            put("compilerIdentity", buildJsonObject {
-                for (key in listOf("executableSha256", "standardLibrarySha256", "solverLibrarySha256", "configurationSha256"))
-                    put(key, "d".repeat(64))
-            })
-            put("comparisonControls", buildJsonObject { put("exact", "false") })
-            put("labCheck", JsonObject(getValue("labCheck").jsonObject + mapOf(
-                "policy" to JsonPrimitive(Policies.MINIZINC),
-                "inputs" to JsonArray(listOf("original.fzn" to flatZinc, "original.ozn" to output).map { (name, content) ->
-                    buildJsonObject { put("path", "/capture/$name"); put("text", content); put("sha256", sha256(content.toByteArray())) }
-                }),
-            )))
-        }.copy(problem = problem.copy(format = "MINIZINC"))
-
-    @Test
-    fun `checked MiniZinc claims bind their compiler and exact compiled frame`() {
-        val claim = compiledPoint("7", proven = true)
-
-        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim).state)
-        assertEquals(OptimumAssessment.CONTRADICTED, assessed(claim, compiledPoint("6")).state)
-        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE,
-            assessed(claim, compiledPoint("6", flatZinc = "constraint bool_eq(true, true); solve minimize cost;")).state)
-    }
-
-    @Test
-    fun `missing or changed compiled receipts cannot qualify MiniZinc optima`() {
-        val claim = compiledPoint("7", proven = true)
-        val noCompiler = edit(claim) { remove("compilerIdentity") }
-        val noInputs = edit(claim) {
-            put("labCheck", JsonObject(getValue("labCheck").jsonObject - "inputs"))
+            assertEquals(OptimumAssessment.UNVERIFIED, OptimumClaims.assessment(qualified.record)?.state, format)
+            assertTrue(requireNotNull(Outcome.of(qualified.record)).proven, format)
+            assertEquals(1, Compare.compare(listOf("claim"), listOf(qualified)).arms.single().proven, format)
         }
-        val changed = edit(claim) {
-            put("compiledInputHashes", JsonObject(getValue("compiledInputHashes").jsonObject +
-                ("flatzinc" to JsonPrimitive("f".repeat(64)))))
-        }
-
-        for (incomplete in listOf(noCompiler, noInputs, changed))
-            assertEquals(OptimumAssessment.UNVERIFIED, assessed(incomplete).state)
     }
 
     @Test
@@ -303,53 +264,6 @@ class OptimumClaimsTest {
     }
 
     @Test
-    fun `MPS counterexamples consume declared policy receipts rather than strict verdicts`() {
-        val policy = buildJsonObject {
-            put("numericAuthority", "DECIMAL_LITERALS")
-            put("feasibilityTolerance", buildJsonObject { put("absolute", "1/10000000"); put("relative", "1/10000000") })
-            put("undeclaredIntegers", buildJsonObject { put("lower", "0"); put("upper", "1") })
-            put("undeclaredReals", buildJsonObject { put("lower", "0"); put("upper", JsonNull) })
-            put("integrality", "exact"); put("objective", "exact")
-        }
-        val semantics = buildJsonObject {
-            put("schema", "mps-decimal-semantics-v1"); put("declared", policy); put("effective", policy)
-        }
-        fun mps(value: String, proven: Boolean = false): CaseResult = edit(point(value, proven)) {
-            put("numericalSemantics", semantics)
-            val check = getValue("labCheck").jsonObject
-            put("labCheck", JsonObject(check + ("policy" to JsonPrimitive(Policies.MPS_DECLARED)) + ("mpsChecks" to buildJsonObject {
-                put("exact", buildJsonObject { put("state", LabCheck.INVALID) })
-                put("configured", buildJsonObject { put("state", LabCheck.VALID); put("policy", Policies.MPS_DECLARED) })
-                put("semanticsSha256", MpsNumericalSemantics.identity(semantics))
-                put("semanticsQualified", true); put("declarationOrigin", "solver-record")
-                put("checkerPolicySha256", MpsNumericalSemantics.checkerPolicyIdentity(semantics))
-                put("comparisonIdentity", MpsNumericalSemantics.comparisonIdentity(semantics, source, "MIN"))
-                put("sourceSha256", source); put("witnessSha256", sha256(witness.toByteArray()))
-                put("claimedObjective", value); put("reconstructedObjective", value)
-                put("objectiveSense", "MIN"); put("objectiveUnits", "original-mps"); put("scope", "original-model")
-                put("assumptions", JsonArray(emptyList()))
-            })))
-        }.copy(problem = problem.copy(format = "MPS"))
-        val claim = mps("7", proven = true)
-        val better = mps("6")
-        assertEquals(OptimumAssessment.CONTRADICTED, assessed(claim, better).state)
-        val gapClaim = gap(mps("10000", proven = true), "9999")
-        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(gapClaim, mps("19999/2")).state)
-        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(gapClaim, mps("9999")).state)
-        assertEquals(OptimumAssessment.CONTRADICTED, assessed(gapClaim, mps("9998")).state)
-        val undeclared = edit(claim) { remove("numericalSemantics") }
-        assertEquals(OptimumAssessment.UNVERIFIED, assessed(undeclared, better).state)
-        val unsupported = edit(better) {
-            val check = getValue("labCheck").jsonObject
-            val receipt = check.getValue("mpsChecks").jsonObject
-            put("labCheck", JsonObject(check + ("mpsChecks" to JsonObject(receipt + ("configured" to buildJsonObject {
-                put("state", LabCheck.UNKNOWN); put("policy", Policies.MPS_DECLARED)
-            })))))
-        }
-        assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim, unsupported).state)
-    }
-
-    @Test
     fun `malformed exact objectives cannot fall back to display doubles`() {
         val claim = point("7", proven = true)
         for (value in listOf("1/0", "NaN", "1e9999999")) {
@@ -394,7 +308,7 @@ class OptimumClaimsTest {
     }
 
     @Test
-    fun `unverified native claims cannot manufacture proof performance gains`() {
+    fun `missing point checks do not suppress native completion gains`() {
         fun fixture(case: CaseResult) = edit(scoped(case)) { put("solver", JsonPrimitive("fixture")); remove("comparisonControls") }
         val before = fixture(point("7", proven = true, state = LabCheck.UNKNOWN)).copy(arm = Confirm.BEFORE)
         val after = fixture(point("7", proven = true)).copy(arm = Confirm.AFTER)
