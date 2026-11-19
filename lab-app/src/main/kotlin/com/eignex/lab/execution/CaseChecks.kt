@@ -26,10 +26,20 @@ import com.eignex.lab.util.size
 
 /** The lab's checkers as this machine provisions them: one adapter per format, the sources from its own corpus. */
 object Checkers {
+    private val adapters: Map<String, (DataPaths) -> FormatChecker> = linkedMapOf(
+        "XCSP3" to { Xcsp3Checker() },
+        "SMTLIB" to { paths -> SmtChecker(Dolmen(dir(paths))::binary) },
+        "DIMACS" to { DimacsChecker() },
+    )
+
+    /** Registered formats, available without provisioning or running checker tools. */
+    val formats: Set<String> get() = adapters.keys
+
+    fun covers(format: String): Boolean = formats.any { it.equals(format, ignoreCase = true) }
+
     fun of(paths: DataPaths): SourceChecker {
-        val dolmen = Dolmen(dir(paths))
         return SourceChecker(
-        adapters = listOf(Xcsp3Checker(), SmtChecker(dolmen::binary), DimacsChecker()),
+        adapters = adapters.values.map { it(paths) },
         locator = SourceLocator(paths.corpusDir.toFile(), fixtures = fixtures(paths), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))

@@ -362,6 +362,17 @@ internal fun jobPage(
                 attributes["id"] = "results"
             }
             val spec = job.experiment
+            val requestedArms = arms.filter {
+                it.arm.values["backend"] != REFERENCE_BACKEND && ValidationRequest.requested(spec, it.arm.values)
+            }.map { it.arm.label }.toSet()
+            val uncheckedFormats = cases.filter { it.arm in requestedArms && !Checkers.covers(it.problem.format) }
+                .map { it.problem.format.uppercase().ifBlank { "an unspecified format" } }.distinct().sorted()
+            if (uncheckedFormats.isNotEmpty()) {
+                p(classes = "note") {
+                    text("Source validation was requested, but no lab checker is available for ${uncheckedFormats.joinToString()}. ")
+                    text("Checker availability is optional; native solver results still count.")
+                }
+            }
             when (spec.work) {
                 is Work.Analysis -> run { emit(analysisSection(job, spec, files)) }
                 is Work.Bench -> {

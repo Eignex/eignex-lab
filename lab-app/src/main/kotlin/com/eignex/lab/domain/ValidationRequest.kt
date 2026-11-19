@@ -9,8 +9,8 @@ object ValidationRequest {
 
     /**
      * Compressed stdout custody for the bench's MPS checks, which admitted 64 MiB of solver stdout instead of 8 MiB.
-     * The lab checks MPS itself from the record's final witness, so it is never forwarded; scheduled runs still carry
-     * it ([SCHEDULED]), so their fingerprints stay those of the runs before.
+     * It is no longer forwarded; scheduled runs still carry it ([SCHEDULED]), so their fingerprints stay those of
+     * the runs before. It does not imply that a lab checker is available for MPS.
      */
     const val GZIP_PARAM = "param.source-validation-gzip"
 
