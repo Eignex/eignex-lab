@@ -165,10 +165,12 @@ internal class NomadReconciler(
             val bound = allocations.firstOrNull { it.id == s.allocation }
             if ((s.allocation != null && (bound == null || !bound.active)) ||
                 (s.allocation == null && allocations.isNotEmpty() && allocations.none { it.active })) {
-                val exited = bound ?: allocations.maxByOrNull { it.createdAt }
+                // A different allocation's exit must never be attributed to this bound worker.
+                val exited = if (s.allocation != null) bound else allocations.maxByOrNull { it.createdAt }
                 // Persist a bounded, credential-free receipt before retiring the attempt, including old worker releases.
-                val evidence = if ((s.executionClass == ExecutionClass.PREPARE || s.allocation == null) && exited != null)
-                    runCatching { nomad.allocation(exited.id) }.getOrNull() ?: exited else exited
+                val evidence = (s.allocation ?: exited?.id)?.let { runCatching { nomad.allocation(it) }.getOrNull() } ?: exited
+                // A list stub can lag the full allocation or omit a still-running bound worker.
+                if (evidence?.active == true) continue
                 if (s.executionClass == ExecutionClass.PREPARE) {
                     val detail = evidence?.termination?.let { Json.encodeToString(it) } ?: "unavailable"
                     store.execution.note(job.id, s.id, "preparation-termination:$detail")
@@ -182,10 +184,11 @@ internal class NomadReconciler(
                 }
                 store.execution.loseSession(s.id, when {
                     current.paused || s.desired == Desired.DRAIN -> "drained"
-                    bound?.client == "complete" && !store.execution.hasActiveAttempt(s.id) -> "idle"
-                    bound?.desired == "stop" && bound.client in setOf("pending", "running", "lost") -> "retired:allocation-stopped"
-                    else -> "infrastructure:${bound?.client ?: "failed"}"
-                })
+                    evidence?.client == "complete" && !store.execution.hasActiveAttempt(s.id) -> "idle"
+                    evidence?.desired == "stop" && evidence.client in setOf("pending", "running", "lost") -> "retired:allocation-stopped"
+                    else -> "infrastructure:${evidence?.client ?: "failed"}"
+                }, termination = AllocationTerminationReceipt(s.allocation ?: evidence?.id, s.node ?: evidence?.node,
+                    System.currentTimeMillis(), evidence?.termination))
             }
         }
         if (store.job(job.id)?.status?.isActive != true) return

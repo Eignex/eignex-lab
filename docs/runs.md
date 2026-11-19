@@ -460,6 +460,16 @@ Abrupt node loss can prevent the final snapshot. Missing exit/signal/OOM evidenc
 also retains bounded Nomad task termination evidence in execution events, including for older worker releases.
 These receipts do not accept a build, reset failed-attempt costs, or change owner/generation/lease fencing.
 
+`lab execution ID` (`GET /jobs/ID/execution`, authenticated) exposes retained allocation receipts as
+`termination`: allocation and node identity, controller `observedAt` (epoch milliseconds), and `task` evidence.
+The coordinator fetches the full allocation before replacing a bound solve worker, including when the allocation
+list has lost it. Receipts survive controller restarts and Nomad garbage collection. Task evidence contains the
+last 32 allowlisted event types, client/desired/task states, exit code, signal, OOM flag and kill/driver/setup error
+indicators. Free-form Nomad messages, task configuration and credentials are excluded. `task: null` means no task
+evidence was available; null exit/signal/OOM fields remain unknown. Historical sessions without a receipt have
+no termination evidence. Diagnose these infrastructure losses separately from solver performance; the whole unfinished
+paired row is still replaced together, with failed-attempt costs retained.
+
 Workers also write two bounded `worker-lifecycle-v1` JSON receipts to their uploaded console at
 `nomad/workers/<session>.log`: registration and retirement. They require no attempt owner, so a preparation
 that exits before its first claim still records whether the coordinator returned no work, an admission wait

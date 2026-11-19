@@ -65,6 +65,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionRead { db ->
+        val terminations = db.sqlRows("SELECT session_id, detail FROM execution_events WHERE job_id = ? AND detail LIKE 'allocation-termination:%' ORDER BY id", job) {
+            it.getString(1) to Json.decodeFromString<AllocationTerminationReceipt>(it.getString(2).removePrefix("allocation-termination:"))
+        }.toMap()
         db.sqlRows("SELECT $SESSION_COLUMNS, observed_at, observation, resource_checkpoint FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
             val s = sessionRow(row)
             val active = db.sqlRows("SELECT state, generation, preparation_progress, preparation_updated_at, preparation_caches, preparation_diagnostics FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { attempt ->
@@ -77,7 +80,7 @@ class ExecutionStore internal constructor(private val store: Store) {
             val done = db.sqlRows("SELECT COUNT(*) FROM iteration_attempts WHERE session_id = ? AND state = 'committed'", s.id) { it.getInt(1) }.single()
             val observed = row.getObject("observed_at")?.let { row.getLong("observed_at") }
             ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed, active?.third,
-                row.getString("resource_checkpoint")?.let { Json.decodeFromString<ResourceCheckpoint>(it) })
+                row.getString("resource_checkpoint")?.let { Json.decodeFromString<ResourceCheckpoint>(it) }, terminations[s.id])
         }
     }
     /**
@@ -509,8 +512,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     /** Retire this credential before allowing a replacement session. Completed attempts remain accepted. */
-    fun loseSession(id: String, reason: String, at: Long = now()) = store.executionTransaction { db ->
+    fun loseSession(id: String, reason: String, at: Long = now(), termination: AllocationTerminationReceipt? = null) = store.executionTransaction { db ->
         db.session(id)?.let { s ->
+            termination?.let { db.event(s.jobId, id, "allocation-termination:${Json.encodeToString(it)}", it.observedAt) }
             db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = ? WHERE id = ?", reason.take(1024), id)
             db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", id, map = ::attemptRow)
                 .forEach { db.invalidate(it, "lost", at) }

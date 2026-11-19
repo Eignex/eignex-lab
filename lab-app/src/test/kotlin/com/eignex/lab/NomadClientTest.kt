@@ -20,6 +20,37 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class NomadClientTest {
+    @Test fun `termination receipts bound and allowlist task evidence without retaining arbitrary messages or credentials`() {
+        val raw = buildJsonObject {
+            put("ID", "allocation"); put("JobID", "job"); put("NodeID", "node")
+            put("ClientStatus", "complete"); put("DesiredStatus", "run")
+            putJsonObject("TaskStates") { putJsonObject("worker") {
+                put("State", "dead")
+                putJsonArray("Events") {
+                    repeat(100) { add(buildJsonObject {
+                        put("Type", "secret-event-type"); put("DisplayMessage", "secret-message")
+                        put("KillReason", "secret-kill-reason"); put("DriverError", "secret-driver-error")
+                        put("SetupError", "secret-setup-error")
+                        putJsonObject("Details") { put("token", "secret-token") }
+                    }) }
+                    add(buildJsonObject {
+                        put("Type", "Terminated"); put("ExitCode", 0); put("Signal", 0)
+                        putJsonObject("Details") { put("oom_killed", "false") }
+                    })
+                }
+            } }
+            putJsonObject("Job") { putJsonObject("Env") { put("PASSWORD", "secret-password") } }
+        }
+        val receipt = assertNotNull(NomadClient.allocationRow(raw).termination)
+        assertEquals(32, receipt.events.size)
+        assertEquals(List(31) { "other" } + "Terminated", receipt.events)
+        assertEquals(0, receipt.exitCode); assertEquals(0, receipt.signal); assertEquals(false, receipt.oomKilled)
+        assertTrue(receipt.killReported); assertTrue(receipt.driverErrorReported); assertTrue(receipt.setupErrorReported)
+        val json = Json.encodeToString(NomadTaskTermination.serializer(), receipt)
+        assertFalse(json.contains("secret"))
+        assertTrue(json.length < 1024)
+    }
+
     @Test fun `executable driver errors are distinguished from image pulls and killed allocations`() {
         fun row(message: String, desired: String = "run", killed: Boolean = false) = NomadClient.allocationRow(buildJsonObject {
             put("ID", "allocation"); put("JobID", "job"); put("NodeID", "node"); put("ClientStatus", "failed"); put("DesiredStatus", desired)
