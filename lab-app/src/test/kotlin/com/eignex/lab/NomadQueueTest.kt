@@ -835,7 +835,8 @@ class NomadQueueTest {
     private fun input(job: Long, os: String, arch: String): WorkerBundle {
         val text = "fixture"
         val bytes = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
-            zip.putNextEntry(ZipEntry("fixture")); zip.write(text.toByteArray()); zip.closeEntry()
+            // The same source must retain its digest when jobs are created across ZIP's two-second timestamp boundary.
+            zip.putNextEntry(ZipEntry("fixture").apply { time = 0 }); zip.write(text.toByteArray()); zip.closeEntry()
         } }.toByteArray()
         val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
         artifacts.put(job, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))

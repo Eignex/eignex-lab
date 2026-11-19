@@ -1,6 +1,12 @@
 import java.security.MessageDigest
+import org.gradle.api.file.ArchiveOperations
+import javax.inject.Inject
 
 plugins { `java-library` }
+
+interface ArchiveServices {
+    @get:Inject val archives: ArchiveOperations
+}
 
 val revision = "ca58fc79a42374d080aac4d1410874e748cf0a05"
 val sourceSha256 = "541624efb4ac227d0c99c7058e2e07041ff4f119070b0c996cde539fe71cc296"
@@ -20,16 +26,18 @@ dependencies {
 
 val unpackSources by tasks.registering(Sync::class) {
     val archive = upstreamSources.elements.map { it.single().asFile }
+    val archives = objects.newInstance<ArchiveServices>().archives
+    val expectedSha256 = sourceSha256
     inputs.files(upstreamSources)
-    inputs.property("sourceSha256", sourceSha256)
-    from(archive.map { tarTree(resources.gzip(it)) }) {
+    inputs.property("sourceSha256", expectedSha256)
+    from(archive.map { archives.tarTree(archives.gzip(it)) }) {
         include("$sourceRoot/src/main/java/**", "$sourceRoot/LICENSE")
     }
     into(layout.buildDirectory.dir("upstream"))
     doFirst {
         val actual = MessageDigest.getInstance("SHA-256").digest(archive.get().readBytes())
             .joinToString("") { "%02x".format(it) }
-        check(actual == sourceSha256) { "XCSP3 source archive SHA-256 mismatch: $actual" }
+        check(actual == expectedSha256) { "XCSP3 source archive SHA-256 mismatch: $actual" }
     }
 }
 
