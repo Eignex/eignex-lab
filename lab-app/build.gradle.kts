@@ -7,6 +7,8 @@ plugins {
 eignexBuild {
     jvmToolchain.set(25)
     jvmTarget.set(25)
+    // settings.gradle.kts owns repositories for every module.
+    useMavenCentral.set(false)
 }
 
 dependencies {

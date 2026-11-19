@@ -45,14 +45,9 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.ref || github.sha }}
-      - uses: actions/setup-java@v6
+      - name: Set up build
+        uses: ./.github/actions/setup-build
         with:
-          distribution: temurin
-          java-version: 25
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-read-only: false
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       # The lab's external checkers, so their tests run against the real tools (LAB_REQUIRE_CHECKERS fails them
       # rather than skipping when a tool cannot be had), and zsh, which holds Gradle's cache lock in host maintenance.
@@ -103,14 +98,9 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.ref || github.sha }}
-      - uses: actions/setup-java@v6
+      - name: Set up build
+        uses: ./.github/actions/setup-build
         with:
-          distribution: temurin
-          java-version: 25
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-read-only: false
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       - name: Build controller and connected test classes
         run: ./gradlew :lab-app:installDist :lab-app:testClasses
@@ -146,14 +136,9 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.ref || github.sha }}
-      - uses: actions/setup-java@v6
+      - name: Set up build
+        uses: ./.github/actions/setup-build
         with:
-          distribution: temurin
-          java-version: 25
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-read-only: false
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       - name: Validate service installation
         run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh

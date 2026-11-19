@@ -32,6 +32,9 @@ tasks.processResources {
 
 tasks.test {
     useJUnitPlatform()
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    // Requiring real checkers must rerun tests previously allowed to skip unavailable tools.
+    inputs.property("requireCheckers", providers.environmentVariable("LAB_REQUIRE_CHECKERS").orElse(""))
     val testHome = layout.buildDirectory.dir("test-home")
     systemProperty("user.home", testHome.get().asFile.absolutePath)
     doFirst { testHome.get().asFile.mkdirs() }

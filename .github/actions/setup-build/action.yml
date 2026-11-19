@@ -1,0 +1,22 @@
+name: Set up build
+description: Install the shared Eignex JDK and cached Gradle environment
+
+inputs:
+  cache-encryption-key:
+    description: Key used by setup-gradle to persist encrypted configuration-cache entries
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: 25
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        cache-read-only: false
+        cache-encryption-key: ${{ inputs.cache-encryption-key }}

@@ -21,11 +21,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v6
+      - name: Set up build
+        uses: ./.github/actions/setup-build
         with:
-          distribution: temurin
-          java-version: 25
-      - uses: gradle/actions/setup-gradle@v6
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       - name: Read SDK version
         id: version
         shell: bash
