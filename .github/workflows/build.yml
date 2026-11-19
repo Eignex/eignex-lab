@@ -24,7 +24,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Keep the existing required status: both Linux paths must pass, including when one fails or is cancelled.
   check:
+    if: always()
+    needs: [linux-check, nomad-integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all Linux checks
+        env:
+          LINUX_RESULT: ${{ needs.linux-check.result }}
+          NOMAD_RESULT: ${{ needs.nomad-integration.result }}
+        run: test "$LINUX_RESULT" = success && test "$NOMAD_RESULT" = success
+
+  linux-check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -63,10 +76,44 @@ jobs:
         run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh
       - name: Verify host maintenance
         run: bash deploy/tests/test_host_maintenance.sh && bash deploy/tests/test_worker_rollout.sh
-      - name: Build experimental Nomad session renderer
+      - name: Build distribution for DIMACS controls
         run: ./gradlew installDist
       - name: Verify DIMACS ordinary runner and recheck controls
         run: bash checker/verify-dimacs.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            build/dimacs-controls/
+            */build/test-results/
+            */build/reports/tests/
+      - run: ./gradlew distZip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: eignex-lab-distribution
+          path: lab-app/build/distributions/*.zip
+
+  # The live Nomad probes do not depend on the ordinary test suite and have their own test reports.
+  nomad-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: false
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+      - name: Build controller and connected test classes
+        run: ./gradlew :lab-app:installDist :lab-app:testClasses
       - name: Install pinned Nomad prototype
         run: bash deploy/nomad/sandbox.sh install
       - name: Start isolated Nomad prototype
@@ -88,20 +135,11 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-reports
-          path: |
-            build/dimacs-controls/
-            */build/test-results/
-            */build/reports/tests/
-      - run: ./gradlew distZip
-      - uses: actions/upload-artifact@v7
-        with:
-          name: eignex-lab-distribution
-          path: lab-app/build/distributions/*.zip
+          name: nomad-integration-tests
+          path: lab-app/build/test-results/verifyConnectedNomad/
 
   native-worker:
     runs-on: macos-15
-    # Usually 12-13 minutes; slow macOS runners pushed whole runs past a 15-minute limit.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -126,18 +164,75 @@ jobs:
         run: bash deploy/nomad/test_native_services.sh
       - name: Verify Nomad sandbox, autoscaler and runtime pruning scripts
         run: bash deploy/nomad/test_sandbox.sh && bash deploy/nomad/test_autoscaler.sh && bash deploy/nomad/test_prune_runtime.sh
-      - name: Verify native metadata interface and receipt compatibility
-        run: ./gradlew :lab-app:test --tests com.eignex.lab.CorpusIndexesTest --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.JobDirViewTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
-      - name: Verify cold build scope and cache compatibility
-        run: ./gradlew :lab-app:test --tests com.eignex.lab.ColdBuildVerificationTest --tests com.eignex.lab.WarmBuildSourceTest
-      - name: Verify interruption deadlines and bounded cost evidence
-        run: ./gradlew :lab-app:test --tests com.eignex.lab.WorkerInterruptionTest
-      - name: Verify bounded native startup diagnostics
-        run: ./gradlew :lab-app:test --tests com.eignex.lab.NativeStartupCaptureTest --tests 'com.eignex.lab.PortableWorkerTest.native startup*' --tests 'com.eignex.lab.PortableWorkerTest.native sampling*'
-      - name: Verify accepted artifact names on the native filesystem
-        run: ./gradlew :lab-app:test --tests com.eignex.lab.AcceptedArtifactFilesTest --tests com.eignex.lab.PreparedArchiveFilesTest
-      - name: Verify native worker, detached process cleanup and durable ownership
-        run: ./gradlew :lab-app:test --tests com.eignex.lab.PortableWorkerTest --tests com.eignex.lab.PreparedArchiveFilesTest --tests com.eignex.lab.JobFilesTest --tests com.eignex.lab.JobFileInventoryTest --tests com.eignex.lab.ArtifactListingMetadataTest --tests com.eignex.lab.NativePriorityTest --tests com.eignex.lab.AcceptedArtifactFilesTest --tests com.eignex.lab.RegionalBuildArchivesTest --tests com.eignex.lab.RunnerTest --tests com.eignex.lab.BenchWorkflowTest --tests com.eignex.lab.BenchRunsTest --tests com.eignex.lab.BenchInputDigestsTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.ExecutionStoreTest --tests com.eignex.lab.ExecutionMigrationTest --tests com.eignex.lab.NomadBatchJobTest --tests com.eignex.lab.NomadBackendTest --tests com.eignex.lab.NomadQueueTest --tests com.eignex.lab.JobWaitTest --tests com.eignex.lab.QueueEfficiencyTest --tests com.eignex.lab.CapacityPolicyTest --tests com.eignex.lab.CapacityStartupTest --tests com.eignex.lab.CapacityCollectorTest --tests com.eignex.lab.CapacityWireTest --tests com.eignex.lab.CapacityAdapterTest --tests com.eignex.lab.AwsCapacityAdapterTest --tests com.eignex.lab.SharedInputCacheTest --tests com.eignex.lab.SharedInputsTest --tests com.eignex.lab.WorkerFailureTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.WorkerTreesTest --tests com.eignex.lab.ColdStagingTest --tests com.eignex.lab.ColdBuildVerificationTest --tests com.eignex.lab.WorkerBuildStagingTest --tests com.eignex.lab.WorkerBuildAccountingTest --tests com.eignex.lab.NativePreparedTreesTest --tests com.eignex.lab.BuildDiskBudgetTest --tests com.eignex.lab.ProcessSupervisorWriteTest --tests com.eignex.lab.PreparationTraceTest --tests com.eignex.lab.WorkerWorkspacesTest --tests com.eignex.lab.ResultJournalTest --tests com.eignex.lab.JournalCompactionTest --tests com.eignex.lab.JournalDrainLoopTest --tests com.eignex.lab.GroupedJournalTest --tests com.eignex.lab.PackedJournalTest --tests com.eignex.lab.WorkerRetryTest --tests com.eignex.lab.WorkerTransferTest --tests com.eignex.lab.ArtifactReuseTest --tests com.eignex.lab.ArtifactFileVerificationTest --tests com.eignex.lab.SourceBundleCacheTest --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.WorkerArchiveCacheTest --tests com.eignex.lab.WorkerCacheCleanupTest --tests com.eignex.lab.GradleDistributionSeedTest --tests com.eignex.lab.CompilerAdmissionTest --tests com.eignex.lab.PreparationAdmissionTest --tests com.eignex.lab.DiskUsageTest --tests com.eignex.lab.VolumesTest --tests com.eignex.lab.StoreTest
+      # One invocation runs the union of the former selections without repeating classes or replacing earlier reports.
+      - name: Verify native worker contracts
+        run: >-
+          ./gradlew :lab-app:test
+          --tests com.eignex.lab.CorpusIndexesTest
+          --tests com.eignex.lab.MacDirectoryEntriesTest
+          --tests com.eignex.lab.JobDirViewTest
+          --tests com.eignex.lab.TreeBytesTest
+          --tests com.eignex.lab.TreeVerificationTest
+          --tests com.eignex.lab.BenchSelectionsTest
+          --tests com.eignex.lab.BenchInputDigestsTest
+          --tests com.eignex.lab.ColdBuildVerificationTest
+          --tests com.eignex.lab.WarmBuildSourceTest
+          --tests com.eignex.lab.WorkerInterruptionTest
+          --tests com.eignex.lab.NativeStartupCaptureTest
+          --tests com.eignex.lab.AcceptedArtifactFilesTest
+          --tests com.eignex.lab.PreparedArchiveFilesTest
+          --tests com.eignex.lab.PortableWorkerTest
+          --tests com.eignex.lab.JobFilesTest
+          --tests com.eignex.lab.JobFileInventoryTest
+          --tests com.eignex.lab.ArtifactListingMetadataTest
+          --tests com.eignex.lab.NativePriorityTest
+          --tests com.eignex.lab.RegionalBuildArchivesTest
+          --tests com.eignex.lab.RunnerTest
+          --tests com.eignex.lab.BenchWorkflowTest
+          --tests com.eignex.lab.BenchRunsTest
+          --tests com.eignex.lab.ExecutionStoreTest
+          --tests com.eignex.lab.ExecutionMigrationTest
+          --tests com.eignex.lab.NomadBatchJobTest
+          --tests com.eignex.lab.NomadBackendTest
+          --tests com.eignex.lab.NomadQueueTest
+          --tests com.eignex.lab.JobWaitTest
+          --tests com.eignex.lab.QueueEfficiencyTest
+          --tests com.eignex.lab.CapacityPolicyTest
+          --tests com.eignex.lab.CapacityStartupTest
+          --tests com.eignex.lab.CapacityCollectorTest
+          --tests com.eignex.lab.CapacityWireTest
+          --tests com.eignex.lab.CapacityAdapterTest
+          --tests com.eignex.lab.AwsCapacityAdapterTest
+          --tests com.eignex.lab.SharedInputCacheTest
+          --tests com.eignex.lab.SharedInputsTest
+          --tests com.eignex.lab.WorkerFailureTest
+          --tests com.eignex.lab.WorkerTreesTest
+          --tests com.eignex.lab.ColdStagingTest
+          --tests com.eignex.lab.WorkerBuildStagingTest
+          --tests com.eignex.lab.WorkerBuildAccountingTest
+          --tests com.eignex.lab.NativePreparedTreesTest
+          --tests com.eignex.lab.BuildDiskBudgetTest
+          --tests com.eignex.lab.ProcessSupervisorWriteTest
+          --tests com.eignex.lab.PreparationTraceTest
+          --tests com.eignex.lab.WorkerWorkspacesTest
+          --tests com.eignex.lab.ResultJournalTest
+          --tests com.eignex.lab.JournalCompactionTest
+          --tests com.eignex.lab.JournalDrainLoopTest
+          --tests com.eignex.lab.GroupedJournalTest
+          --tests com.eignex.lab.PackedJournalTest
+          --tests com.eignex.lab.WorkerRetryTest
+          --tests com.eignex.lab.WorkerTransferTest
+          --tests com.eignex.lab.ArtifactReuseTest
+          --tests com.eignex.lab.ArtifactFileVerificationTest
+          --tests com.eignex.lab.SourceBundleCacheTest
+          --tests com.eignex.lab.WorkerArchiveCacheTest
+          --tests com.eignex.lab.WorkerCacheCleanupTest
+          --tests com.eignex.lab.GradleDistributionSeedTest
+          --tests com.eignex.lab.CompilerAdmissionTest
+          --tests com.eignex.lab.PreparationAdmissionTest
+          --tests com.eignex.lab.DiskUsageTest
+          --tests com.eignex.lab.VolumesTest
+          --tests com.eignex.lab.StoreTest
       - name: Verify representative native warm preparation work
         run: ./gradlew :lab-app:verifyPreparationPerformance
         env:
