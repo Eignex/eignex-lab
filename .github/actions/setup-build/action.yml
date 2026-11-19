@@ -20,3 +20,10 @@ runs:
       with:
         cache-read-only: false
         cache-encryption-key: ${{ inputs.cache-encryption-key }}
+    - name: Cache encrypted configuration state
+      if: inputs.cache-encryption-key != ''
+      uses: actions/cache@v6
+      with:
+        path: .gradle/configuration-cache
+        key: ${{ runner.os }}-${{ runner.arch }}-configuration-${{ github.job }}-${{ hashFiles('**/*.gradle.kts', '**/gradle.properties', '**/gradle-wrapper.properties', '**/*.versions.toml') }}-${{ github.sha }}
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-configuration-${{ github.job }}-${{ hashFiles('**/*.gradle.kts', '**/gradle.properties', '**/gradle-wrapper.properties', '**/*.versions.toml') }}-
