@@ -41,9 +41,116 @@ class CaseChecksTest {
             checks.afterCase(id, 0)
             checks.await(id)
             assertNull(checks.check(id, 0, problem))
-            assertEquals(0, checks.recheck(id) { false }.checked)
+            val recheck = checks.recheck(id) { false }
+            assertEquals(1, recheck.cases)
+            assertEquals(0, recheck.checked)
+            assertEquals(mapOf(LabCheck.UNSUPPORTED to 1), recheck.states)
+            assertContains(recheck.outcomes.single().reason, format)
             assertEquals(record, store.plans.caseRecordText(id, 0))
             assertTrue(requireNotNull(Outcome.of(store.plans.cases(id).single().record)).proven)
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun `saved SDK cases report unsupported formats and check supported witnesses without changing producer records`() {
+        val root = Files.createTempDirectory("sdk-recheck")
+        try {
+            val store = Store(root.resolve("lab.db"))
+            val model = root.resolve("model.cnf").also { Files.writeString(it, "p cnf 1 1\n1 0\n") }
+            val spec = ExperimentSpec("saved", bench = BenchSpec("bench.json", sourceValidation = false))
+            val cases = listOf("MPS", "DIMACS").map { format ->
+                BenchCase(format, inputs = listOf(BenchInput("model.cnf", role = "model", sha256 = hashFile(model))),
+                    attributes = mapOf("recordSchema" to "solver-v1", "format" to format))
+            }
+            val problems = cases.map { BenchRuns.problem(it).copy(model = model.toString()) }
+            val id = store.create("saved", "main", emptyList(), experiment = spec)
+            store.plan(id, listOf(PlannedArm(Arm("saved", emptyMap()), "revision")), problems,
+                Experiments.cases(2, 1, emptyList()), List(2) { "must never run" to 1L })
+            for ((index, case) in cases.withIndex()) {
+                val details = buildJsonObject {
+                    put("solver", "klause"); put("feasible", true); put("finalWitness", "v 1 0")
+                    put("validationPolicy", "original-producer-policy")
+                    putJsonObject("sourceHashes") { put("model", hashFile(model)) }
+                }
+                val result = BenchResult(case.id, details = details)
+                store.caseRecord(id, index, BenchRuns.record(BenchProtocol.json.encodeToString(BenchResult.serializer(), result), case, 0))
+                store.commandFinished(id, index, 0)
+            }
+            val original = cases.indices.map { store.plans.caseRecordText(id, it) }
+            val historical = LabCheck("retired-mps-policy", LabCheck.VALID, "historical", "retired-checker")
+            store.plans.caseCheck(id, 0, historical.json())
+            val checks = CaseChecks(store, {
+                SourceChecker(listOf(DimacsChecker()), SourceLocator(root.toFile()), root.resolve("scratch").toFile())
+            }) { _, _ -> }
+
+            val report = checks.recheck(id) { false }
+
+            assertEquals(2, report.cases)
+            assertEquals(1, report.checked)
+            assertEquals(mapOf(LabCheck.UNSUPPORTED to 1, LabCheck.VALID to 1), report.states)
+            assertEquals(listOf(DimacsChecker().policy), report.policies)
+            assertEquals(listOf(0, 1), report.outcomes.map { it.index })
+            assertFalse(report.outcomes[0].receiptWritten)
+            assertTrue(report.outcomes[1].receiptWritten)
+            assertContains(report.outcomes[0].reason, "MPS")
+            val records = store.plans.cases(id).map { it.record!!.jsonObject }
+            assertEquals(historical, LabCheck.parse(records[0].getValue("labCheck").toString()))
+            val receipt = LabCheck.parse(records[1].getValue("labCheck").toString())!!
+            assertEquals(mapOf("model" to hashFile(model)), receipt.sourceSha256)
+            assertEquals(sha256("v 1 0".toByteArray()), receipt.witnessSha256)
+            assertTrue(receipt.elapsedMs >= 0)
+            assertEquals(original, cases.indices.map { store.plans.caseRecordText(id, it) })
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun `saved rechecks report absent records and claims and exclude unfinished or failed cases`() {
+        val root = Files.createTempDirectory("recheck-outcomes")
+        try {
+            val store = Store(root.resolve("lab.db"))
+            val id = store.create("saved", "main", emptyList(), experiment = ExperimentSpec("saved", bench = BenchSpec("bench.json")))
+            val problems = (0..4).map { Problem("fixture", "$it", format = "DIMACS") }
+            store.plan(id, listOf(PlannedArm(Arm("saved", emptyMap()), "revision")), problems,
+                Experiments.cases(5, 1, emptyList()), List(5) { "must never run" to 1L })
+            store.commandFinished(id, 0, 0) // no record
+            store.caseRecord(id, 1, "[]")
+            store.commandFinished(id, 1, 0)
+            store.caseRecord(id, 2, """{"solver":"klause","feasible":false,"proven":true}""")
+            store.commandFinished(id, 2, 0)
+            store.commandFinished(id, 3, 1)
+            val checks = CaseChecks(store, { Checkers.of(Config(dataDir = root).paths) }) { _, _ -> }
+
+            val report = checks.recheck(id) { false }
+
+            assertEquals(3, report.cases)
+            assertEquals(0, report.checked)
+            assertEquals(mapOf(LabCheck.NOT_RUN to 2, "skipped" to 1), report.states)
+            assertContains(report.outcomes[0].reason, "no retained record")
+            assertContains(report.outcomes[1].reason, "not a JSON object")
+            assertContains(report.outcomes[2].reason, "no Klause solution claim")
+            assertTrue(report.outcomes.none { it.receiptWritten })
+            assertTrue(report.policies.isEmpty())
+            val cancelled = checks.recheck(id) { true }
+            assertEquals(3, cancelled.cases)
+            assertTrue(cancelled.outcomes.isEmpty())
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun `recheck setup failures are explicit and historical reports remain readable`() {
+        val root = Files.createTempDirectory("recheck-failure")
+        try {
+            val store = Store(root.resolve("lab.db"))
+            val id = store.create("saved", "main", emptyList(), experiment = ExperimentSpec("saved", bench = BenchSpec("bench.json")))
+            store.plan(id, listOf(PlannedArm(Arm("saved", emptyMap()), "revision")), listOf(Problem("fixture", "p", format = "MPS")),
+                Experiments.cases(1, 1, emptyList()), listOf("must never run" to 1L))
+            store.commandFinished(id, 0, 0)
+            val checks = CaseChecks(store, { error("checker setup unavailable") }) { _, _ -> }
+            val report = checks.recheck(id) { false }
+            assertEquals(1, report.cases)
+            assertEquals(0, report.checked)
+            assertEquals(mapOf(LabCheck.NOT_RUN to 1), report.states)
+            assertContains(report.outcomes.single().reason, "checker setup unavailable")
+            assertEquals(report, Json.decodeFromString<RecheckResult>(Json.encodeToString(RecheckResult.serializer(), report)))
+            val old = Json.decodeFromString<RecheckResult>("""{"job":12211,"cases":0,"checked":0,"states":{},"policies":[]}""")
+            assertTrue(old.outcomes.isEmpty())
         } finally { root.toFile().deleteRecursively() }
     }
 

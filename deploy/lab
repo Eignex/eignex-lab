@@ -32,8 +32,8 @@
 #                                                            and its .manifest.json, once the job itself is gone; the archive is
 #                                                            checked against its sha256 and verified before anything is extracted
 #   lab recheck <id>                                        queue a recheck job: the lab's source checkers run again over ended
-#                                                            job <id>'s stored records (the solution claims in the formats the
-#                                                            lab checks), each verdict replacing the case's earlier one; no solver runs
+#                                                            job <id>'s stored records; supported claims get replacement verdicts,
+#                                                            unsupported cases and failures get explicit outcomes; no solver runs
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result, host
 #   lab journal                                             pending result bytes, age, capacity and drain errors
 #   lab kpi [days]                                          throughput of jobs ended per UTC day (default 7): done, failed by
