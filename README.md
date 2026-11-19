@@ -62,6 +62,11 @@ Shared dependency versions live in `gradle/libs.versions.toml`; repositories are
 `settings.gradle.kts`. The application depends on the library modules, and solver unit tests run in
 `lab-solvers`; tests involving coordinator services remain in `lab-app`.
 
+Gradle uses the shared Eignex defaults for build and configuration caching, a 4 GiB Gradle heap,
+and at most four workers. Build and Bench SDK release workflows use `.github/actions/setup-build`
+for the same Temurin 25 and encrypted Gradle cache setup. Test results are excluded from the build
+cache because tests exercise host processes and external tools; compilation outputs remain reusable.
+
 ```sh
 ./gradlew check                         # Verify every module
 ./gradlew :lab-solvers:test             # Solver unit tests
