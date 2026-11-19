@@ -85,7 +85,7 @@ internal class AnalysisJobs(private val paths: DataPaths, private val archives: 
         if (store.cancelRequested(job.id)) return cancel(job.id)
         dir.resolve(CaseChecks.RESULT).writeAtomically(defaultsJson.encodeToString(RecheckResult.serializer(), result))
         val states = result.states.entries.joinToString(", ") { "${it.value} ${it.key}" }.ifEmpty { "none" }
-        logJob(paths, job.id, "job finished: ${result.checked} of job $target's ${result.cases} cases in checked formats have a lab verdict: $states")
+        logJob(paths, job.id, "job finished: ${result.checked} of job $target's ${result.cases} completed cases have a replacement lab verdict; recheck outcomes: $states")
         store.finish(job.id, Status.DONE)
     }
 

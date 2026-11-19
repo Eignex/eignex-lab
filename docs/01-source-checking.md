@@ -93,7 +93,13 @@ using any child verdict. Receipts bind source/witness hashes, full request text 
 Java executable/classpath and source snapshot hashes, resource limits and completion/cleanup evidence.
 
 `CaseChecks.afterCase` uses this registry when ordinary runner source validation is requested. `CaseChecks.recheck`
-uses the same adapter on ended stored cases without solving. `checker/dimacs.json` replays frozen captures through
+uses the same adapter on ended stored cases without solving. Its `recheck.json` counts every completed case and
+lists per-case `outcomes`, including `unsupported` formats, `not-run` failures and `skipped` records without a
+Klause solution claim. `checked` counts replacement lab receipts; `states` counts all reported outcomes. Unsupported
+formats and attempts that produce no receipt leave earlier receipts and producer records intact. Historical
+recheck reports without `outcomes` remain readable. Checker availability is optional: an unsupported format is a
+normal outcome and does not fail the recheck job. There is no expectation that every source format has a checker.
+`checker/dimacs.json` replays frozen captures through
 both actual paths and retains original/effective records, source, origin, ordinary/recheck receipts and resource
 identity. Each explicit capture supplies `model` text, original `record`, a `control` object that may replace only
 `finalWitness`, an `expected` checking state and `origin`. Pass a JSON list as the `captures` parameter; bounded

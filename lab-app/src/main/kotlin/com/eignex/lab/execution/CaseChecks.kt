@@ -75,7 +75,13 @@ internal fun checkerMirror(paths: DataPaths, repository: String?): java.nio.file
 
 /** What a recheck job ([CaseChecks.recheck]) did, written as `recheck.json` in its directory. */
 @Serializable
-data class RecheckResult(val job: Long, val cases: Int, val checked: Int, val states: Map<String, Int>, val policies: List<String>)
+data class RecheckResult(val job: Long, val cases: Int, val checked: Int, val states: Map<String, Int>, val policies: List<String>,
+                         val outcomes: List<RecheckCaseResult> = emptyList())
+
+/** An explicit recheck outcome, including cases for which no replacement receipt could be produced. */
+@Serializable
+data class RecheckCaseResult(val index: Int, val state: String, val reason: String, val policy: String? = null,
+                             val receiptWritten: Boolean = false)
 
 /**
  * Runs the lab's checks for the runner: after each case of an arm that asked for validation, on one background thread
@@ -124,6 +130,10 @@ class CaseChecks(
         if (!checker.covers(problem.format)) return null
         val text = store.plans.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
+        return checkRecord(jobId, index, problem, record)
+    }
+
+    private fun checkRecord(jobId: Long, index: Int, problem: Problem, record: JsonObject): LabCheck? {
         val revision = store.plans.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
         val inputs = store.execution.acceptedPreparation(jobId)?.sharedInputs.orEmpty()
         val lease = if (inputs.isNotEmpty()) try {
@@ -139,23 +149,45 @@ class CaseChecks(
     }
 
     /**
-     * Check every finished case of ended job [target] whose format the lab checks, whether or not it asked for
-     * validation, replacing earlier lab verdicts: a backfill, solving nothing. Stops early when [cancelled].
+     * Account for every completed case of ended job [target], whether or not it asked for validation. Supported
+     * claims get replacement receipts; unsupported, skipped and failed attempts retain earlier receipts and get
+     * explicit outcomes in the recheck report. Solves nothing. Stops early when [cancelled].
      */
     fun recheck(target: Long, cancelled: () -> Boolean): RecheckResult {
-        val cases = store.plans.casePlan(target).filter { it.status == Status.DONE && checker.covers(it.problem.format) }
+        val cases = store.plans.casePlan(target).filter { it.status == Status.DONE }
         val states = sortedMapOf<String, Int>()
         val policies = sortedSetOf<String>()
+        val outcomes = mutableListOf<RecheckCaseResult>()
         var checked = 0
         for (case in cases) {
             if (cancelled()) break
-            val check = runCatching { check(target, case.index, case.problem) }
-                .onFailure { log(target, "case ${case.index}: source check failed: ${it.message}") }.getOrNull() ?: continue
-            checked++
-            states.merge(check.state, 1, Int::plus)
-            policies += check.policy
+            val outcome = try {
+                recheckCase(target, case)
+            } catch (failure: Exception) {
+                if (failure is InterruptedException) throw failure
+                RecheckCaseResult(case.index, LabCheck.NOT_RUN,
+                    "source check failed: ${failure.message ?: failure::class.simpleName}".take(500))
+            }
+            outcomes += outcome
+            if (outcome.receiptWritten) checked++
+            states.merge(outcome.state, 1, Int::plus)
+            outcome.policy?.let { policies += it }
+            log(target, "case ${case.index}: recheck ${outcome.state}: ${outcome.reason}")
         }
-        return RecheckResult(target, cases.size, checked, states, policies.toList())
+        return RecheckResult(target, cases.size, checked, states, policies.toList(), outcomes)
+    }
+
+    private fun recheckCase(target: Long, case: CaseResult): RecheckCaseResult {
+        fun result(state: String, reason: String) = RecheckCaseResult(case.index, state, reason)
+        if (!checker.covers(case.problem.format)) return result(LabCheck.UNSUPPORTED,
+            "no independent source checker is registered for format ${case.problem.format.ifBlank { "(unspecified)" }}")
+        val text = store.plans.caseRecordText(target, case.index)
+            ?: return result(LabCheck.NOT_RUN, "the completed case has no retained record")
+        val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject
+            ?: return result(LabCheck.NOT_RUN, "the retained record is not a JSON object")
+        val check = checkRecord(target, case.index, case.problem, record)
+            ?: return result("skipped", "the retained record has no Klause solution claim to check")
+        return RecheckCaseResult(case.index, check.state, check.reason, check.policy, receiptWritten = true)
     }
 
     companion object {

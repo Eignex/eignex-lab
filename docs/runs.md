@@ -478,6 +478,10 @@ optimization completion counts without an independent assignment receipt; checke
 counterexamples still withdraw claims. Assignment validity and native completion are separate evidence.
 See [Independent source checking](01-source-checking.md) for qualification and supported checker boundaries.
 
+`lab recheck <job>` accounts for every completed saved case. Its `recheck.json` and job page list each outcome,
+including unsupported formats and failures to read or check a retained record. `checked` counts replacement
+receipts, while `states` counts all outcomes; unsupported cases keep any historical receipt. No solver runs.
+
 DIMACS SAT points use the independent complete original-coordinate policy documented in
 [Independent source checking](01-source-checking.md#original-dimacs-sat-points). Ordinary requested checks and
 ended-case rechecks share the production registry. `checker/dimacs.json` accepts explicit frozen captures and

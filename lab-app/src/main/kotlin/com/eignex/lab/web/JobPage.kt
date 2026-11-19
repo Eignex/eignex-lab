@@ -658,10 +658,11 @@ private fun analysisSection(job: Job, spec: ExperimentSpec, files: JobDirView): 
             a(href = "/jobs/${analyze.job}") {
                 emit(analyze.job)
             }
-            text(": each Solver solution claim in a format the lab checks gets a ")
+            text(": available source checkers check supported solution claims and retain a ")
             text(
                 "fresh verdict, which its pages, trend and comparisons then read. Nothing was built and no solver ran.",
             )
+            text(" A checker is optional: unsupported formats are reported explicitly. Attempts without a replacement receipt retain earlier verdicts.")
         }
         val result = files.recheck
         if (result == null) {
@@ -679,11 +680,26 @@ private fun analysisSection(job: Job, spec: ExperimentSpec, files: JobDirView): 
                 emit(result.checked)
                 text(" of ")
                 emit(result.cases)
-                text(" cases checked: ")
+                text(" completed cases have replacement lab verdicts; recheck outcomes: ")
                 emit(states)
                 text("; policies ")
                 emit(result.policies.joinToString())
                 text(".")
+            }
+            if (result.outcomes.isNotEmpty()) {
+                table {
+                    thead {
+                        tr { th { text("Case") }; th { text("Outcome") }; th { text("Replacement receipt") }; th { text("Reason") } }
+                    }
+                    tbody {
+                        for (outcome in result.outcomes) tr {
+                            td { emit(outcome.index) }
+                            td { text(outcome.state) }
+                            td { text(if (outcome.receiptWritten) "yes" else "no") }
+                            td { text(outcome.reason) }
+                        }
+                    }
+                }
             }
         }
         return@buildHtml
