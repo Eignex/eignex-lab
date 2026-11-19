@@ -36,6 +36,36 @@ class PagesTest {
     private val host = HostReport("Test/Arm64", 4, "java")
 
     @Test
+    fun `requested source validation explains unavailable checkers without failing native results`() {
+        val root = Files.createTempDirectory("optional-checker-message")
+        try {
+            val config = Config(dataDir = root, auth = Auth.Disabled)
+            val store = Store(root.resolve("lab.db"))
+            val spec = ExperimentSpec("optional", bench = BenchSpec("bench.json", sourceValidation = true))
+            val id = store.create("optional", "main", emptyList(), experiment = spec)
+            val job = store.job(id)!!
+            val arms = listOf(PlannedArm(Arm("native", emptyMap()), "revision"))
+            val record = Json.parseToJsonElement("""{"solver":"klause","kind":"optimize","feasible":true,"proven":true,"objective":7}""")
+            fun case(format: String, index: Int = 0) = CaseResult(index, Status.DONE,
+                Problem("fixture", "p$index", format = format), "native", record = record)
+            val message = "Source validation was requested, but no lab checker is available for MPS."
+            val cases = listOf(case("MPS"), case("mps", 1), case("DIMACS", 2))
+
+            val page = jobPage(config.status, job, false, arms, cases, files = JobDirView.NONE)
+
+            assertContains(page, message)
+            assertContains(page, "Checker availability is optional; native solver results still count.")
+            assertFalse(page.contains("available for MPS, MPS"))
+            assertTrue(Outcome.of(record)!!.proven)
+            val unrequested = job.copy(experiment = spec.copy(bench = spec.work.bench!!.copy(sourceValidation = false)))
+            assertFalse(jobPage(config.status, unrequested, false, arms, cases, files = JobDirView.NONE).contains(message))
+            assertFalse(jobPage(config.status, job, false, arms, listOf(case("DIMACS")), files = JobDirView.NONE).contains(message))
+            val reference = arms.map { it.copy(arm = it.arm.copy(values = mapOf("backend" to REFERENCE_BACKEND))) }
+            assertFalse(jobPage(config.status, job, false, reference, cases, files = JobDirView.NONE).contains(message))
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun `a profile stopped at its time limit says so and still lists what it left in OUT`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.dataDir.resolve("lab.db"))

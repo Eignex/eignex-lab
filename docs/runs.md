@@ -477,6 +477,8 @@ evaluator. MiniZinc, MPS and weighted Boolean formats retain native results with
 optimization completion counts without an independent assignment receipt; checker rejection and checked
 counterexamples still withdraw claims. Assignment validity and native completion are separate evidence.
 See [Independent source checking](01-source-checking.md) for qualification and supported checker boundaries.
+When source validation was requested for a format without a registered checker, the job page says which formats
+are unavailable. This is a normal result; requesting validation does not require a checker for every format.
 
 `lab recheck <job>` accounts for every completed saved case. Its `recheck.json` and job page list each outcome,
 including unsupported formats and failures to read or check a retained record. `checked` counts replacement
