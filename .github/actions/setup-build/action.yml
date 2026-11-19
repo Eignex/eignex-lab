@@ -20,10 +20,18 @@ runs:
       with:
         cache-read-only: false
         cache-encryption-key: ${{ inputs.cache-encryption-key }}
+    # Later privileged sandbox fixtures contain directories the runner cannot traverse.
+    - name: Fingerprint build configuration
+      id: configuration
+      if: inputs.cache-encryption-key != ''
+      shell: bash
+      env:
+        CONFIGURATION_HASH: ${{ hashFiles('**/*.gradle.kts', '**/gradle.properties', '**/gradle-wrapper.properties', '**/*.versions.toml') }}
+      run: printf 'hash=%s\n' "$CONFIGURATION_HASH" >> "$GITHUB_OUTPUT"
     - name: Cache encrypted configuration state
       if: inputs.cache-encryption-key != ''
       uses: actions/cache@v6
       with:
         path: .gradle/configuration-cache
-        key: ${{ runner.os }}-${{ runner.arch }}-configuration-${{ github.job }}-${{ hashFiles('**/*.gradle.kts', '**/gradle.properties', '**/gradle-wrapper.properties', '**/*.versions.toml') }}-${{ github.sha }}
-        restore-keys: ${{ runner.os }}-${{ runner.arch }}-configuration-${{ github.job }}-${{ hashFiles('**/*.gradle.kts', '**/gradle.properties', '**/gradle-wrapper.properties', '**/*.versions.toml') }}-
+        key: ${{ runner.os }}-${{ runner.arch }}-configuration-${{ github.job }}-${{ steps.configuration.outputs.hash }}-${{ github.sha }}
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-configuration-${{ github.job }}-${{ steps.configuration.outputs.hash }}-
