@@ -1168,6 +1168,7 @@ class NomadBackendTest {
         override var namespace = "default"
         val jobs = mutableMapOf<String, JsonObject>(); val allocations = mutableMapOf<String, NomadAllocation>()
         val allocationDetails = mutableMapOf<String, NomadAllocation>()
+        val allocationFailures = mutableSetOf<String>()
         val nodeInventory = mutableMapOf<String, JsonObject>()
         val nodeTasks = mutableMapOf<String, List<JsonObject>>()
         override fun nodes() = nodeInventory.values.toList()
@@ -1178,7 +1179,10 @@ class NomadBackendTest {
         override fun submit(job: JsonObject) { submissions++; jobs[job.getValue("ID").jsonPrimitive.content] = job; if (failAfterSubmit) { failAfterSubmit = false; error("lost acknowledgement") } }
         override fun stop(id: String) { jobs.remove(id) }
         override fun allocations(job: String) = allocations.values.filter { it.job == job }
-        override fun allocation(id: String) = allocationDetails[id] ?: allocations[id]
+        override fun allocation(id: String): NomadAllocation? {
+            check(id !in allocationFailures) { "allocation lookup unavailable" }
+            return allocationDetails[id] ?: allocations[id]
+        }
         var startupErrors: String? = null
         var startupLogUnavailable = false
         override fun startupStderr(id: String): String? {
@@ -1342,6 +1346,90 @@ class NomadBackendTest {
         assertFalse(events.any { it.detail.startsWith("preparation-worker-exit:") })
         assertEquals(Status.RUNNING, store.job(id)!!.status)
         assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+    }
+
+    @ParameterizedTest @ValueSource(strings = ["complete", "failed", "lost", "missing"])
+    fun `bound solve losses retain full termination evidence over the authenticated API after restart and GC`(scenario: String) = testApplication {
+        val state = if (scenario == "missing") "complete" else scenario
+        val id = setup(); register()
+        val original = session
+        val claim = backend().claim(session.id, token, "allocation")!!
+        assertEquals(2, claim.indices.size, "the entire paired row belongs to one attempt")
+        store.execution.phase(claim.owner, "executing")
+        val checkpoint = ResourceCheckpoint(100, session.budget, "cgroup-v2-hard", "200000 100000", "1073741824",
+            mapOf("cpu.stat" to "usage_usec 1000"), "worker-cumulative-lower-bound")
+        store.execution.resourceCheckpoint(claim.owner, checkpoint)
+        val diagnostic = NomadTaskTermination(state, "run", "dead", listOf("Started", "Killing", "Terminated"),
+            137, 9, true, true, false, false)
+        // Nomad's list stubs omit evidence available from the full allocation endpoint.
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = state)
+        control.allocationDetails["allocation"] = control.allocations.getValue("allocation").copy(termination = diagnostic)
+        if (scenario == "missing") control.allocations.clear()
+        val before = now()
+        backend(Store(file)).reconcile()
+        assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
+        assertTrue(store.execution.accepted(id).isEmpty())
+        val report = Store(file).execution.reports(id).single { it.session.id == original.id }
+        val receipt = assertNotNull(report.termination)
+        assertEquals("allocation", receipt.allocation); assertEquals("node", receipt.node)
+        assertTrue(receipt.observedAt in before..now())
+        assertEquals(diagnostic, receipt.task)
+        assertEquals(checkpoint, report.resources, "failed-attempt costs stay on the original session")
+        assertEquals("infrastructure:$state", report.observation)
+        control.allocations.clear(); control.allocationDetails.clear()
+        repeat(2) { backend(Store(file)).reconcile() }
+        assertEquals(1, Store(file).execution.events(id).count { it.detail.startsWith("allocation-termination:") })
+        val config = Config(dataDir = root, auth = Auth.Required(Password.hash("operator-password")), minFreeBytes = 0)
+        application { api(config, Store(file), HostReport("Test/Arm64", 4, "java")) }
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/jobs/$id/execution").status)
+        val response = client.get("/jobs/$id/execution") {
+            header(HttpHeaders.Authorization, "Basic " + Base64.getEncoder().encodeToString(":operator-password".toByteArray()))
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        val reports = Json.decodeFromString<List<ExecutionSessionReport>>(response.bodyAsText())
+        assertEquals(report, reports.single { it.session.id == original.id })
+        assertFalse(response.bodyAsText().contains(token))
+        assertNull(reports.single { it.session.desired == Desired.RUN }.termination)
+        useReplacement(id, "replacement", "another-node")
+        val retry = backend().claim(session.id, token, "replacement")!!
+        assertEquals(claim.indices, retry.indices, "the complete unfinished row reruns on the replacement")
+        assertNotEquals(claim.owner, retry.owner)
+    }
+
+    @ParameterizedTest @ValueSource(strings = ["missing", "lookup-error", "stub"])
+    fun `solve loss with unavailable evidence still replaces the row without inventing an exit`(scenario: String) {
+        val id = setup(); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
+        when (scenario) {
+            "lookup-error" -> control.allocationFailures += "allocation"
+            "missing" -> {
+                val other = control.allocations.remove("allocation")!!.copy(id = "other", termination =
+                    NomadTaskTermination("complete", "run", "dead", listOf("Terminated"), 0, 0, false, false, false, false))
+                control.allocations["other"] = other
+            }
+        }
+        backend(Store(file)).reconcile()
+        val receipt = assertNotNull(Store(file).execution.reports(id).single { it.session.id == session.id }.termination)
+        assertEquals("allocation", receipt.allocation); assertEquals("node", receipt.node)
+        assertNull(receipt.task, "another allocation's exit must not fill missing evidence")
+        assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+        assertEquals(1, store.execution.sessions(id).count { it.desired == Desired.RUN })
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
+    }
+
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `full allocation evidence preserves a live bound solve when the list is stale`(missing: Boolean) {
+        val id = setup(); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        control.allocationDetails["allocation"] = control.allocations.getValue("allocation")
+        if (missing) control.allocations.clear()
+        else control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
+        backend().reconcile()
+        store.execution.renew(claim.owner)
+        assertEquals(1, store.execution.sessions(id).size)
+        assertNull(store.execution.reports(id).single().termination)
     }
 
     @Test fun `three proven worker exits at the same preparation stage stop automatic replacement`() {

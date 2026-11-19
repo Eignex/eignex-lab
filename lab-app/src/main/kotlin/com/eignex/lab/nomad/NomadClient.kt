@@ -49,12 +49,6 @@ interface NomadControl : ClusterNodes {
 
 data class NomadWorkerExit(val code: Int)
 
-/** Safe controller-side evidence, independent of the strict software-crash classifier. Unknown is null. */
-@kotlinx.serialization.Serializable
-data class NomadTaskTermination(val client: String?, val desired: String?, val task: String?,
-    val events: List<String>, val exitCode: Int?, val signal: Int?, val oomKilled: Boolean?,
-    val killReported: Boolean, val driverErrorReported: Boolean, val setupErrorReported: Boolean)
-
 data class NomadAllocation(val id: String, val job: String, val node: String, val client: String, val desired: String, val createdAt: Long = 0,
                            val workerExit: NomadWorkerExit? = null, val termination: NomadTaskTermination? = null,
                            val launchError: String? = null) {
