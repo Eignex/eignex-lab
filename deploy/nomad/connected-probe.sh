@@ -30,7 +30,7 @@ finish() {
 }
 
 main() {
-  local connected="$root/build/nomad-connected" lock token password trust java_home image context name broken digest node status
+  local connected="$root/build/nomad-connected" lock token password trust java_home image context entrypoint_file broken digest node status
   { mkdir -p "$connected" && chmod 700 "$connected"; } || fail "cannot create $connected"
   lock="$connected/probe.lock"
   exec 9>> "$lock" || fail "cannot open $lock"
@@ -69,8 +69,8 @@ main() {
   context="$(mktemp -d "$state/image-context-XXXXXX")" || fail "cannot create an image context"
   { mkdir -p "$context/lab-app/build/install" && cp -R "$root/lab-app/build/install/eignex-lab" "$context/lab-app/build/install/"; } ||
     fail "cannot copy the installed distribution"
-  for name in deploy/nomad/worker.Dockerfile deploy/nomad/worker-entrypoint.sh; do
-    { mkdir -p "$(dirname "$context/$name")" && cp "$root/$name" "$context/$name"; } || fail "cannot copy $name"
+  for entrypoint_file in deploy/nomad/worker.Dockerfile deploy/nomad/worker-entrypoint.sh; do
+    { mkdir -p "$(dirname "$context/$entrypoint_file")" && cp "$root/$entrypoint_file" "$context/$entrypoint_file"; } || fail "cannot copy $entrypoint_file"
   done
   chmod 644 "$context/lab-app/build/install/eignex-lab/bin/eignex-lab" "$context/deploy/nomad/worker-entrypoint.sh"
   docker build -f "$context/deploy/nomad/worker.Dockerfile" --build-arg WORKER_RELEASE=connected-probe -t "$image" \
