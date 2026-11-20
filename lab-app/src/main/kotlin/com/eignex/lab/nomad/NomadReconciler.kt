@@ -81,6 +81,10 @@ internal class NomadReconciler(
         when (intent.operation) {
             IntentOp.SUBMIT -> {
                 if (session.desired == Desired.STOP) { store.execution.acknowledge(intent.id); return }
+                if (session.desired == Desired.DRAIN && store.execution.loseUnallocatedSession(session.id, "drained")) {
+                    store.execution.acknowledge(intent.id)
+                    return
+                }
                 if (!workAllowed()) return
                 if (session.executionClass == ExecutionClass.SOLVE && !mayStartSolve()) {
                     // Registration and retirement serialize in the store. If bind won, its idle claim drains;
@@ -135,6 +139,9 @@ internal class NomadReconciler(
                 store.execution.loseSession(s.id, "no-unclaimed-work")
                 continue
             }
+            // An unregistered worker cannot drain at a claim boundary and may never find capacity.
+            // Retirement serializes with registration, so a worker that already bound keeps its row.
+            if ((current.paused || s.desired == Desired.DRAIN) && store.execution.loseUnallocatedSession(s.id, "drained")) continue
             if (s.executionClass == ExecutionClass.SOLVE && !mayStartSolve() &&
                 store.execution.loseUnallocatedSession(s.id, "journal-pressure")) continue
             // Pending allocations cannot reach the claim boundary themselves. Release their reservation

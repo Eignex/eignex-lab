@@ -22,6 +22,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.EnumSource
+import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.ValueSource
 import java.io.ByteArrayInputStream
 import java.nio.file.Files
@@ -39,6 +40,56 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @ParameterizedTest @CsvSource("false, false", "false, true", "true, false", "true, true")
+    fun `unregistered draining workers retire across restart and release replacement admission`(preparation: Boolean, submitted: Boolean) {
+        val id = setup(preparation = preparation)
+        control.allocations.clear()
+        if (submitted) backend().reconcile()
+        val original = session
+        val originalToken = token
+        val frozen = manifest
+        store.execution.drain(original.id)
+
+        val restarted = Store(file)
+        backend(restarted).reconcile()
+        assertEquals(Desired.STOP, restarted.execution.session(original.id)!!.desired)
+        assertEquals("drained", restarted.execution.reports(id).single { it.session.id == original.id }.observation)
+        assertTrue(restarted.execution.intents().any { it.session == original.id && it.operation == IntentOp.STOP })
+        val next = restarted.execution.sessions(id).single { it.desired == Desired.RUN }
+        assertEquals(frozen.copy(session = next.id), restarted.execution.manifest(next.id))
+        assertEquals(0, restarted.execution.failureCount(id))
+        repeat(3) { backend(restarted).reconcile() }
+        assertEquals(2, restarted.execution.sessions(id).size)
+        useReplacement(id, "replacement", "replacement-node")
+        val claim = assertNotNull(backend().claim(session.id, token, "replacement"))
+        assertEquals(if (preparation) emptyList() else listOf(0, 1), claim.indices)
+        assertFailsWith<ExecutionFenced> { restarted.execution.bind(original.id, originalToken, "late", "node", "release") }
+    }
+
+    @Test fun `pausing an unregistered worker retires it without waiting for capacity`() {
+        val id = setup()
+        control.allocations.clear()
+        store.setPaused(id, true)
+        backend().reconcile()
+        assertEquals(Desired.STOP, store.execution.session(session.id)!!.desired)
+        assertEquals(1, store.execution.sessions(id).size)
+        store.setPaused(id, false)
+        backend(Store(file)).reconcile()
+        assertEquals(1, store.execution.sessions(id).count { it.desired == Desired.RUN })
+    }
+
+    @Test fun `draining an unsubmitted worker delivers its stop even during a volume hold`() {
+        val id = setup()
+        control.allocations.clear()
+        store.execution.drain(session.id)
+        val held = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, workAllowed = { false })
+        repeat(2) { held.reconcile() }
+        assertEquals(Desired.STOP, store.execution.session(session.id)!!.desired)
+        assertEquals(0, control.submissions)
+        assertTrue(store.execution.intents().isEmpty())
+        assertEquals(1, store.execution.sessions(id).size)
+    }
+
     @ParameterizedTest @ValueSource(booleans = [false, true])
     fun `a Spot shortage moves pending preparation and solves to on-demand while preserving frozen inputs`(preparation: Boolean) {
         val policy = fallbackPolicy()

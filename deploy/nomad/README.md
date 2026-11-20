@@ -242,6 +242,9 @@ unfinished iterations on another compatible node. Repeated infrastructure losses
 discard accepted preparation/results. Recovery uses fresh sessions under the same concurrency, CPU/memory and capacity
 limits, and waits when matching Spot capacity is unavailable. Loss events remain diagnostic history, not a job retry
 allowance. Nomad task restarts remain disabled and its reschedule/disconnect policy is explicit.
+Unregistered sessions that are paused or draining are fenced and stopped without waiting for an allocation
+or worker exit. Registration and retirement serialize, so bound workers finish their owned paired rows;
+retired pending reservations no longer block replacement admission or retain autoscaling demand.
 Ordinary solver exits/timeouts remain case outcomes. Linux workers refuse missing or mismatched runtime hard limits;
 native workers report advisory enforcement. Resource counters are retained under each job's `nomad/` files.
 
