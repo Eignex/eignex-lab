@@ -525,7 +525,7 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     fun loseUnallocatedSession(id: String, reason: String, at: Long = now()): Boolean = store.executionTransaction { db ->
         val s = db.session(id) ?: return@executionTransaction false
-        if (s.desired != Desired.RUN || s.allocation != null) return@executionTransaction false
+        if (s.desired == Desired.STOP || s.allocation != null) return@executionTransaction false
         db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = ? WHERE id = ?", reason.take(1024), id)
         db.stopIntent(s)
         db.event(s.jobId, id, "lost:${reason.take(1024)}", at)
