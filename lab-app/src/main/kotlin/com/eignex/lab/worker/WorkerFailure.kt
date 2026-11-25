@@ -52,3 +52,12 @@ private val UPSTREAM_UNAVAILABLE = listOf(
 
 internal fun upstreamUnavailable(output: String): Boolean = UPSTREAM_UNAVAILABLE.any { it.containsMatchIn(output) }
 
+
+/**
+ * Gradle fails a task whose build cache entry does not unpack instead of rebuilding it:
+ * "Failed to load cache entry c952e4094dd8a601e0fa57eb10717e01 for task ':klause:compileKotlinJvm': Could not load
+ * from remote cache: Unexpected end of ZLIB input stream". The entry says nothing about the code.
+ */
+private val BUILD_CACHE_ENTRY_UNUSABLE = Regex("""Failed to load cache entry [0-9a-f]+ for task '[^']+'""")
+
+internal fun buildCacheEntryUnusable(output: String): Boolean = BUILD_CACHE_ENTRY_UNUSABLE.containsMatchIn(output)

@@ -108,7 +108,11 @@ fun Application.workerApi(
                 val stored = withContext(CoordinatorIo.artifacts) {
                     call.receiveChannel().toInputStream().use { cache.put(cachePartition(cache, s.id), call.parameters["key"]!!, it) }
                 }
-                call.respond(if (stored) HttpStatusCode.Created else HttpStatusCode.PayloadTooLarge)
+                call.respond(when (stored) {
+                    GradleBuildCache.Put.STORED -> HttpStatusCode.Created
+                    GradleBuildCache.Put.TOO_LARGE -> HttpStatusCode.PayloadTooLarge
+                    GradleBuildCache.Put.INCOMPLETE -> HttpStatusCode.BadRequest
+                })
             }
             post("/claim") {
                 check(workAllowed()); call.session

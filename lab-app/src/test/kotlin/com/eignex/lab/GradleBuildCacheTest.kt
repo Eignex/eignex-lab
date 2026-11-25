@@ -17,37 +17,66 @@ class GradleBuildCacheTest {
 
     @AfterTest fun cleanup() { root.toFile().deleteRecursively() }
 
+    private fun gzip(text: String): ByteArray = gzip(text.toByteArray())
+    private fun gzip(bytes: ByteArray): ByteArray = java.io.ByteArrayOutputStream().also { out ->
+        java.util.zip.GZIPOutputStream(out).use { it.write(bytes) }
+    }.toByteArray()
+    private fun gunzip(path: java.nio.file.Path): String = java.util.zip.GZIPInputStream(Files.newInputStream(path)).use { String(it.readAllBytes()) }
+    private val entrySize = gzip(ByteArray(100)).size
+    private fun entry() = gzip(ByteArray(100)).inputStream()
+
     @Test fun `entries are stored per partition and never cross repositories or platforms`() {
         val cache = GradleBuildCache(root, 1_000_000)
         val klause = cache.partition("Eignex/klause", "linux", "amd64", "jdk25")
         assertNotEquals(klause, cache.partition("Eignex/koblas", "linux", "amd64", "jdk25"))
         assertNotEquals(klause, cache.partition("Eignex/klause", "linux", "arm64", "jdk25"))
         assertNull(cache.get(klause, key))
-        assertTrue(cache.put(klause, key, "outputs".byteInputStream()))
-        assertEquals("outputs", Files.readString(cache.get(klause, key)!!))
+        assertEquals(GradleBuildCache.Put.STORED, cache.put(klause, key, gzip("outputs").inputStream()))
+        assertEquals("outputs", gunzip(cache.get(klause, key)!!))
         assertNull(cache.get(cache.partition("Eignex/koblas", "linux", "amd64", "jdk25"), key))
     }
 
     @Test fun `oversized entries are refused and leave nothing behind`() {
         val cache = GradleBuildCache(root, 1_000_000)
         val part = cache.partition("r", "linux", "amd64", "t")
-        assertFalse(cache.put(part, key, ByteArray(100).inputStream(), limit = 10))
+        assertEquals(GradleBuildCache.Put.TOO_LARGE, cache.put(part, key, gzip("x".repeat(100)).inputStream(), limit = 10))
         assertNull(cache.get(part, key))
         assertEquals(0, Files.list(root.resolve(part)).use { it.count() })
     }
 
     @Test fun `writes beyond the cap evict the least recently used entries`() {
         var at = 1_000L
-        val cache = GradleBuildCache(root, 250, clock = { at })
+        val cap = entrySize * 5L / 2
+        val cache = GradleBuildCache(root, cap, clock = { at })
         val part = cache.partition("r", "linux", "amd64", "t")
-        assertTrue(cache.put(part, key, ByteArray(100).inputStream()))
+        assertEquals(GradleBuildCache.Put.STORED, cache.put(part, key, entry()))
         Files.setLastModifiedTime(root.resolve(part).resolve(key), java.nio.file.attribute.FileTime.fromMillis(1_000))
-        assertTrue(cache.put(part, other, ByteArray(100).inputStream()))
+        assertEquals(GradleBuildCache.Put.STORED, cache.put(part, other, entry()))
         at = 5_000; assertNotNull(cache.get(part, other)) // other is now the more recently used entry
-        assertTrue(cache.put(part, "aa".repeat(16), ByteArray(100).inputStream()))
+        assertEquals(GradleBuildCache.Put.STORED, cache.put(part, "aa".repeat(16), entry()))
         assertNull(cache.get(part, key), "the oldest entry made room")
         assertNotNull(cache.get(part, other))
-        assertTrue(cache.usage().get() <= 250)
+        assertTrue(cache.usage().get() <= cap)
+    }
+
+    @Test fun `incomplete entries are refused and corrupt stored entries read as misses`() {
+        val cache = GradleBuildCache(root, 1_000_000)
+        val part = cache.partition("r", "linux", "amd64", "t")
+        val whole = gzip("x".repeat(10_000))
+        for (incomplete in listOf(whole.copyOf(whole.size / 2), "not gzip".toByteArray(), ByteArray(0)))
+            assertEquals(GradleBuildCache.Put.INCOMPLETE, cache.put(part, key, incomplete.inputStream()))
+        assertNull(cache.get(part, key))
+        assertEquals(0, Files.list(root.resolve(part)).use { it.count() })
+
+        // An entry truncated on disk before this process read it (job 12848) is deleted and served as a miss.
+        Files.write(root.resolve(part).resolve(other), whole.copyOf(whole.size - 8))
+        val fresh = GradleBuildCache(root, 1_000_000)
+        assertEquals(whole.size - 8L, fresh.usage().get())
+        assertNull(fresh.get(part, other))
+        assertFalse(Files.exists(root.resolve(part).resolve(other)))
+        assertEquals(0, fresh.usage().get())
+        assertEquals(GradleBuildCache.Put.STORED, fresh.put(part, other, whole.inputStream()))
+        assertNotNull(fresh.get(part, other))
     }
 
     @Test fun `keys and partitions outside Gradle's form are rejected`() {
