@@ -1,0 +1,92 @@
+name: veripb
+
+# Builds the VeriPB checker the lab runs for OPB and WCNF points from its pinned crates.io source, for the platforms
+# the lab checks on, and publishes the binaries as this repository's `veripb-v<version>` release. VeriPB publishes no
+# binaries of its own; the lab downloads these and checks them against the SHA-256 it pins (`VeriPb` in lab-solvers).
+on:
+  push:
+    tags: ['veripb-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: veripb-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VERIPB_VERSION: 3.0.2
+  VERIPB_CRATE_SHA256: c1b9da430bdf5fd6e7dee94bd920a60c5a5cdb7532ecb18e0918141e2c4e28b9
+  RUST_TOOLCHAIN: 1.89.0
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - asset: veripb-linux-amd64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - asset: veripb-macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - name: Check the tag names the pinned version
+        run: test "$GITHUB_REF_NAME" = "veripb-v$VERIPB_VERSION"
+      - name: Install the musl linker
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.target }}"
+      - name: Fetch and verify the crate
+        run: |
+          curl -sSfL -o veripb.crate "https://static.crates.io/crates/veripb/veripb-$VERIPB_VERSION.crate"
+          echo "$VERIPB_CRATE_SHA256  veripb.crate" | shasum -a 256 -c -
+          tar xzf veripb.crate
+      # --locked builds the dependency versions and checksums in the crate's own Cargo.lock.
+      - name: Build
+        working-directory: veripb-${{ env.VERIPB_VERSION }}
+        run: |
+          cargo "+$RUST_TOOLCHAIN" build --locked --release --bin veripb --target "${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/veripb" "$GITHUB_WORKSPACE/${{ matrix.asset }}"
+      - name: Check a feasible point and a wrong cost
+        run: |
+          printf 'min: +2 x1 +3 x2 +1 x3 ;\n+1 x1 +1 x2 >= 1 ;\n+1 x2 +1 x3 >= 1 ;\n' > point.opb
+          proof() { printf 'pseudo-Boolean proof version 3.0\nsol ~x1 x2 ~x3;\noutput NONE;\nconclusion BOUNDS -10 %s;\nend pseudo-Boolean proof;\n' "$1"; }
+          proof 3 > right.pbp
+          proof 2 > wrong.pbp
+          "./${{ matrix.asset }}" --version | grep -qx "veripb $VERIPB_VERSION"
+          "./${{ matrix.asset }}" --opb point.opb right.pbp | grep -qx 's VERIFIED BOUNDS -10 <= obj <= 3'
+          if "./${{ matrix.asset }}" --opb point.opb wrong.pbp; then exit 1; fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: veripb-*
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum veripb-linux-amd64 veripb-macos-arm64 > SHA256SUMS
+          cat SHA256SUMS
+          notes="VeriPB $VERIPB_VERSION (MIT OR Apache-2.0, https://gitlab.com/MIAOresearch/software/VeriPB), built by"
+          notes+=" this tag's workflow from crates.io veripb-$VERIPB_VERSION.crate (SHA-256 $VERIPB_CRATE_SHA256)"
+          notes+=" with Rust $RUST_TOOLCHAIN and \`cargo build --locked --release\`. The Linux build is static (musl)."
+          gh release create "$GITHUB_REF_NAME" veripb-linux-amd64 veripb-macos-arm64 SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false --title "VeriPB $VERIPB_VERSION" --notes "$notes"
