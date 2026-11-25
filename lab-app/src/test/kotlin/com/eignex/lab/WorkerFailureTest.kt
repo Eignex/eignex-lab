@@ -14,6 +14,8 @@ import com.eignex.lab.cli.*
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class WorkerFailureTest {
     @Test fun `worker process exits distinguish software from transport cancellation and fencing`() {
@@ -63,6 +65,13 @@ class WorkerFailureTest {
             "> Could not GET 'https://maven.pkg.github.com/x/y.pom'. Received status code 401 from server: Unauthorized",
             "e: file:///src/Main.kt:3:5 Unresolved reference 'connect'.",
         )) assertFailsWith<WorkerBuildFailure>(output) { checkPreparationExit(1) { output } }
+    }
+
+    @Test fun `only Gradle's cache entry load failure counts as an unusable cache entry`() {
+        assertTrue(buildCacheEntryUnusable("exit 1\n* What went wrong:\nExecution failed for task ':klause:compileKotlinJvm'.\n" +
+            "> Failed to load cache entry c952e4094dd8a601e0fa57eb10717e01 for task ':klause:compileKotlinJvm': Could not load from remote cache: Unexpected end of ZLIB input stream"))
+        assertFalse(buildCacheEntryUnusable("e: file:///src/Main.kt:3:5 Unresolved reference 'connect'."))
+        assertFalse(buildCacheEntryUnusable("Could not store entry c952e4094dd8a601e0fa57eb10717e01 in remote build cache: Storing entry failed (HTTP 503)"))
     }
 
     @Test fun `successful preparation does not read failure output`() {

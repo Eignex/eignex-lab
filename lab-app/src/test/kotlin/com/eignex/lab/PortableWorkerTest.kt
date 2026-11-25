@@ -991,6 +991,37 @@ class PortableWorkerTest {
         }
     }
 
+    @Test fun `an unloadable build cache entry rebuilds once without the build cache`(): Unit = service { socket ->
+        val calls = root.resolve("cache-entry-calls")
+        // Gradle's own failure for a truncated remote entry (job 12848), reproduced with Gradle 9.7.1.
+        val script = """
+            printf '%s %s\n' "${'$'}*" "${'$'}{LAB_GRADLE_CACHE_URL:-none}" >> '$calls'
+            case " ${'$'}* " in *" --no-build-cache "*) mkdir -p build; echo prepared > build/output ;;
+              *) echo "> Failed to load cache entry c952e4094dd8a601e0fa57eb10717e01 for task ':klause:compileKotlinJvm': Could not load from remote cache: Unexpected end of ZLIB input stream" >&2; exit 1 ;;
+            esac
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("gradlew" to script))
+        val source = VerifiedCache(root.resolve("cache-entry-source")).stage(input) { ByteArrayInputStream(bytes) }
+        val cache = WorkerBuildCache(root.resolve("cache-entry-builds"), ProcessSupervisor(socket), remoteCache = { "http://127.0.0.1:9/cache/" })
+        val tree = cache.prepare(input.copy(build = WorkerBuild(listOf("assemble"))), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        assertEquals("prepared", Files.readString(tree.resolve("build/output")).trim())
+        val (cached, uncached) = Files.readAllLines(calls)
+        assertTrue(" --build-cache " in "$cached " && cached.endsWith(" http://127.0.0.1:9/cache/"), cached)
+        assertTrue(" --no-build-cache " in "$uncached " && uncached.endsWith(" none"), uncached)
+        assertTrue(cache.awaitMaintenanceIdle())
+
+        // A failure that is not about a cache entry is the code's own and is not retried.
+        val compileCalls = root.resolve("compile-calls")
+        val (broken, brokenBytes) = bundle(mapOf("gradlew" to "echo build >> '$compileCalls'; echo \"e: Main.kt:3:5 Unresolved reference 'connect'.\" >&2; exit 1"))
+        val brokenSource = VerifiedCache(root.resolve("compile-source")).stage(broken) { ByteArrayInputStream(brokenBytes) }
+        val brokenCache = WorkerBuildCache(root.resolve("compile-builds"), ProcessSupervisor(socket), remoteCache = { "http://127.0.0.1:9/cache/" })
+        assertFailsWith<WorkerBuildFailure> {
+            brokenCache.prepare(broken.copy(build = WorkerBuild(listOf("assemble"))), brokenSource, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        }
+        assertEquals(1, Files.readAllLines(compileCalls).size)
+        assertTrue(brokenCache.awaitMaintenanceIdle())
+    }
+
     @Test fun `source builds share their session budget cache once and rebuild corrupt outputs`(): Unit = service { socket ->
         val count = root.resolve("build-count")
         val script = """#!/usr/bin/env bash

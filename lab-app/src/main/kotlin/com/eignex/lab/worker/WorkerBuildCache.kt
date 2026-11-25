@@ -226,11 +226,17 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                             }
                             // Task outputs are reused from earlier preparations on any node; the init script binds the cache.
                             val cache = remoteCache()
-                            run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                                "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain") +
-                                GRADLE_NETWORK_RETRY +
-                                listOfNotNull(cache?.let { "--build-cache" }), tree,
-                                env + ("GRADLE_USER_HOME" to dependencyHome.toString()) + listOfNotNull(cache?.let { "LAB_GRADLE_CACHE_URL" to it }), kind = "compilation")
+                            fun gradle(caching: List<String>, remote: String?) =
+                                run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
+                                    "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain") +
+                                    GRADLE_NETWORK_RETRY + caching, tree,
+                                    env + ("GRADLE_USER_HOME" to dependencyHome.toString()) + listOfNotNull(remote?.let { "LAB_GRADLE_CACHE_URL" to it }), kind = "compilation")
+                            try { gradle(listOfNotNull(cache?.let { "--build-cache" }), cache) } catch (failure: WorkerBuildFailure) {
+                                // Gradle fails a task whose cache entry does not unpack instead of rebuilding it: build once more uncached.
+                                if (!buildCacheEntryUnusable(failure.detail)) throw failure
+                                println("worker build: a build cache entry could not be loaded; rebuilding without the build cache")
+                                gradle(listOf("--no-build-cache"), null)
+                            }
                         }
                         Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
                     }

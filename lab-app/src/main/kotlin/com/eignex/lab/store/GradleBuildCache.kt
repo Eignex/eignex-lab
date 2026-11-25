@@ -2,6 +2,7 @@ package com.eignex.lab.store
 
 import com.eignex.lab.util.*
 
+import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -9,16 +10,23 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.FileTime
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.zip.GZIPInputStream
 
 /** A bounded Gradle remote build cache shared by preparations across nodes, partitioned by repository and platform.
  *
- * Entries are opaque task outputs addressed by Gradle's own cache keys; Gradle validates and unpacks them. Partitions
- * keep one repository's or platform's entries from ever serving another. Reads refresh an entry's age; writes beyond
+ * Entries are task outputs addressed by Gradle's own cache keys; Gradle unpacks them. Gradle fails a task whose entry
+ * does not unpack instead of rebuilding it, so only complete gzip streams are stored, and an entry is checked again on
+ * its first read by this process: a truncated or damaged entry is deleted and read as a miss. Partitions keep one
+ * repository's or platform's entries from ever serving another. Reads refresh an entry's age; writes beyond
  * [maxBytes] evict the least recently used entries down to nine tenths of it. Only trusted-source preparations write. */
 class GradleBuildCache(private val root: Path, private val maxBytes: Long, private val clock: () -> Long = ::now) {
+    enum class Put { STORED, TOO_LARGE, INCOMPLETE }
+
     private val used = AtomicLong(-1)
     private val evicting = Any()
+    private val verified: MutableSet<Path> = ConcurrentHashMap.newKeySet()
 
     init { require(maxBytes > 0) }
 
@@ -28,12 +36,20 @@ class GradleBuildCache(private val root: Path, private val maxBytes: Long, priva
     fun get(partition: String, key: String): Path? {
         val path = path(partition, key)
         if (!Files.isRegularFile(path, NOFOLLOW_LINKS)) return null
+        if (path !in verified) {
+            if (!complete(path)) {
+                val bytes = runCatching { Files.size(path) }.getOrDefault(0L)
+                if (Files.deleteIfExists(path) && used.get() >= 0) used.addAndGet(-bytes)
+                return null
+            }
+            verified.add(path)
+        }
         runCatching { Files.setLastModifiedTime(path, FileTime.fromMillis(clock())) }
         return path
     }
 
-    /** Stores at most [limit] bytes from [input]; an oversized entry is refused and nothing is kept. */
-    fun put(partition: String, key: String, input: InputStream, limit: Long = MAX_ENTRY_BYTES): Boolean {
+    /** Stores at most [limit] bytes from [input]; an oversized or incomplete entry is refused and nothing is kept. */
+    fun put(partition: String, key: String, input: InputStream, limit: Long = MAX_ENTRY_BYTES): Put {
         val path = path(partition, key)
         usage() // Count what exists before this entry lands, so the first write is not counted twice.
         Files.createDirectories(path.parent)
@@ -45,15 +61,17 @@ class GradleBuildCache(private val root: Path, private val maxBytes: Long, priva
                 while (true) {
                     val count = input.read(buffer); if (count < 0) break
                     total += count
-                    if (total > limit) return false
+                    if (total > limit) return Put.TOO_LARGE
                     output.write(buffer, 0, count)
                 }
             }
+            if (!complete(temporary)) return Put.INCOMPLETE
             val replaced = if (Files.isRegularFile(path, NOFOLLOW_LINKS)) Files.size(path) else 0L
             Files.move(temporary, path, ATOMIC_MOVE, REPLACE_EXISTING)
+            verified.add(path)
             usage().addAndGet(total - replaced)
             if (used.get() > maxBytes) evict()
-            return true
+            return Put.STORED
         } finally { Files.deleteIfExists(temporary) }
     }
 
@@ -67,7 +85,7 @@ class GradleBuildCache(private val root: Path, private val maxBytes: Long, priva
         val target = maxBytes - maxBytes / 10
         for ((path, bytes) in entries().sortedBy { runCatching { Files.getLastModifiedTime(it.first).toMillis() }.getOrDefault(0L) }) {
             if (used.get() <= target) break
-            if (Files.deleteIfExists(path)) used.addAndGet(-bytes)
+            if (Files.deleteIfExists(path)) { used.addAndGet(-bytes); verified.remove(path) }
         }
     }
 
@@ -89,5 +107,14 @@ class GradleBuildCache(private val root: Path, private val maxBytes: Long, priva
         const val MAX_ENTRY_BYTES = 128L * 1024 * 1024
         private val PARTITION = Regex("[0-9a-f]{32}")
         private val KEY = Regex("[0-9a-f]{32,128}")
+
+        /** Gradle packs every entry as a gzip stream; inflating it to the end proves the stream and its CRC complete. */
+        private fun complete(path: Path): Boolean = try {
+            GZIPInputStream(Files.newInputStream(path), 64 * 1024).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (input.read(buffer) >= 0) Unit
+            }
+            true
+        } catch (_: IOException) { false }
     }
 }
