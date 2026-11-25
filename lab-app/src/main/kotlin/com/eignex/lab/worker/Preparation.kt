@@ -275,6 +275,11 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                     descriptor = hit.descriptor
                     armPlans[arm.arm.label] = hit.plan
                     reusedSelections[arm.arm.label] = hit
+                    // Every arm publishes its resolved plan and descriptor, whether planned here or reused.
+                    Files.writeString(directory.resolve("bench-descriptor-$index.jsonl"), com.eignex.lab.bench.BenchProtocol.json.encodeToString(
+                        com.eignex.lab.bench.BenchDescriptor.serializer(), hit.descriptor))
+                    Files.writeString(directory.resolve("bench-plan-$index.jsonl"), com.eignex.lab.bench.BenchProtocol.json.encodeToString(
+                        com.eignex.lab.bench.BenchPlan.serializer(), hit.plan))
                     trace.cache("selection", "hit", "accepted-selection")
                 } else {
                     if (key != null) trace.cache("selection", "miss", if (key in found) "verification-failed" else "absent")

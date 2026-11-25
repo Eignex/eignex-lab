@@ -565,7 +565,13 @@ class PortableWorkerTest {
         var asked = emptyList<String>()
         val (reused, second) = prepare("reused", refusing) { keys -> asked = keys; listOf(entry) }
         assertEquals(listOf(entry.key), asked)
-        assertFalse(Files.exists(second.resolve("bench-plan-0.jsonl")) || Files.exists(second.resolve("bench-descriptor-0.jsonl")))
+        // The reused arm still publishes its resolved plan and descriptor.
+        assertEquals(entry.plan, com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchPlan>(
+            Files.readString(second.resolve("bench-plan-0.jsonl"))))
+        assertEquals(entry.descriptor, com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchDescriptor>(
+            Files.readString(second.resolve("bench-descriptor-0.jsonl"))))
+        assertTrue(setOf("preparation/bench-plan-0.jsonl", "preparation/bench-descriptor-0.jsonl").all { it in reused.artifacts })
+        assertFalse(Files.exists(second.resolve("bench-request-0.json")))
         assertEquals(planned.armPlans, reused.armPlans)
         assertEquals(planned.benchPlan, reused.benchPlan)
         assertEquals(planned.benchDescriptor, reused.benchDescriptor)
