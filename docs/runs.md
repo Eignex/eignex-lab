@@ -482,8 +482,8 @@ Repository-specific recipes and named workload sets live with their consumers. B
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
 has no implicit solver executable, build layout, corpus selections or JVM profile classpath.
 
-Source validation uses the official XCSP3 checker, Dolmen for SMT-LIB models and the lab's complete DIMACS SAT
-evaluator. MiniZinc, MPS and weighted Boolean formats retain native results without a lab point check. Native
+Source validation uses the official XCSP3 checker, Dolmen for SMT-LIB models, VeriPB for OPB and WCNF points and the
+lab's complete DIMACS SAT evaluator. MiniZinc, MPS and WBO retain native results without a lab point check. Native
 optimization completion counts without an independent assignment receipt; checker rejection and checked
 counterexamples still withdraw claims. Assignment validity and native completion are separate evidence.
 See [Independent source checking](01-source-checking.md) for qualification and supported checker boundaries.

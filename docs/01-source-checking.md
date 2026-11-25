@@ -1,9 +1,9 @@
 # 1. Independent source checking
 
 The lab checks retained assignments against original source bytes through pinned external checkers: the official
-XCSP3 solution checker and Dolmen for SMT-LIB models. The only lab-owned evaluator is the complete DIMACS SAT
-assignment check. MiniZinc, MPS, OPB, WBO and WCNF have no lab assignment checker. Reference solver reports retain
-their native claims; MPS assignments are neither evaluated nor repaired by the lab.
+XCSP3 solution checker, Dolmen for SMT-LIB models and VeriPB for OPB and WCNF points. The only lab-owned evaluator
+is the complete DIMACS SAT assignment check. MiniZinc, MPS and WBO have no lab assignment checker. Reference solver
+reports retain their native claims; MPS assignments are neither evaluated nor repaired by the lab.
 
 `SourceChecker` binds a complete witness and objective to original model bytes through `sourceHashes`; source
 mismatches and missing artifacts stay unchecked. A valid point supplies feasibility evidence, never an optimum,
@@ -54,6 +54,34 @@ checking or reference search. Its `captures` entries contain `{origin: {job}, ca
 `point`, `contradicted`, `unverified` or `no-counterexample`. Expected states assert observations without
 supplying checking authority. The bounded `capture-zstd-base64` transport is shared with DIMACS replay: compressed
 parameters are limited to 120 KiB and decoded text to 24 MiB.
+
+## OPB and WCNF points
+
+`PbChecker` registers `OPB` under `lab-opb-veripb-3.0.2-point-v1` and `WCNF` under `lab-wcnf-veripb-3.0.2-point-v1`.
+[VeriPB](https://gitlab.com/MIAOresearch/software/VeriPB) 3.0.2 (MIT OR Apache-2.0) publishes no binaries, so the
+`veripb` workflow builds the crates.io crate (SHA-256 `c1b9da43…c4e28b9`) with Rust 1.89.0 and `cargo build --locked`
+into this repository's `veripb-v3.0.2` release: static Linux x86-64 and macOS arm64. The lab downloads its platform's
+binary into `$LAB_DATA/checkers/veripb-3.0.2/` and checks it against the SHA-256 pinned in `VeriPb`.
+
+The lab writes a four-line proof: `sol` with the record's final witness, `output NONE`, then `conclusion SAT` or,
+for an optimization claim, `conclusion BOUNDS <-10^100> <claimed objective>` (negated for a `max:` objective, which
+VeriPB reads negated). VeriPB requires the witness extended by unit propagation to be a full assignment satisfying
+every constraint, and its objective value to equal the claim exactly. The lower bound is trivially implied, so a
+valid receipt establishes a feasible point with that objective and nothing about optimality or UNSAT claims.
+The proof is retained in the receipt's `inputs`.
+
+Witnesses are competition `v` lines, translated literal by literal without interpretation: OPB names negated by `-`
+(or `~`); WCNF as one MaxSAT Evaluation 2024 bit string (character `i` is variable `i`) or signed variable numbers
+with an optional final `0`. Other lines or tokens are `invalid`, as are VeriPB's rejections: a constraint conflict,
+a propagated assignment that falsifies a constraint, a contradictory witness or an objective other than the claim.
+A fractional claim is `unknown`. VeriPB reads linear OPB and WCNF with `h` lines; WBO, nonlinear OPB and the older
+`p wcnf` format are `unsupported` in VeriPB's words. A WCNF soft clause with several literals becomes a constraint on
+a blocking variable no witness assigns. When the witness satisfies such a clause, or leaves any objective variable
+unassigned, VeriPB asks for the value and the check is `unknown`; the lab does not complete the assignment.
+
+VeriPB runs under the bounded tool envelope Dolmen uses, with 60 CPU seconds, a 65-second deadline, a 4 GiB
+address space and complete output and cleanup evidence. Anything else it prints is `unknown`; a timeout or
+incomplete envelope is `not-run`.
 
 ## Original DIMACS SAT points
 

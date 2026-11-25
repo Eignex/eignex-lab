@@ -23,7 +23,7 @@ import org.junit.jupiter.params.provider.ValueSource
 
 class CaseChecksTest {
     @ParameterizedTest
-    @ValueSource(strings = ["MINIZINC", "MPS", "OPB", "WBO", "WCNF"])
+    @ValueSource(strings = ["MINIZINC", "MPS", "WBO"])
     fun `formats without a checker retain their native record through ordinary checks and rechecks`(format: String) {
         val root = Files.createTempDirectory("native-checks")
         try {
