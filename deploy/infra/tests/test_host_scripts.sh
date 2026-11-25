@@ -185,6 +185,13 @@ interruption() {  # interruption <provider>
   env LAB_HOST_ROOT="$root/host" PATH="$root/bin:$PATH" timeout 10 bash "$infra/common/interruption.sh"
 }
 
+test_aws_workers_are_never_terminated_to_rebalance_zones() {
+  local suspended
+  suspended="$(awk '/resource "aws_autoscaling_group" "workers"/ { inside = 1 } inside && /suspended_processes *=/ { gsub(/[ \t]+/, ""); print; exit }' \
+    "$infra/aws/main.tf")"
+  equal 'suspended_processes=["AZRebalance"]' "$suspended" "the worker group's suspended processes"
+}
+
 test_aws_bootstrap_configuration_activates_the_interruption_service() {
   setup
   local provider

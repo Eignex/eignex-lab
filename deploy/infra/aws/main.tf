@@ -97,8 +97,11 @@ resource "aws_autoscaling_group" "workers" {
   health_check_type         = "EC2"
   health_check_grace_period = 600
   capacity_rebalance        = false # Rebalance surges must not spend unreserved vCPUs.
-  protect_from_scale_in     = false
-  max_instance_lifetime     = 86400
+  # Zone rebalancing terminates in-service workers mid-preparation or mid-case (#528); only empty scale-in and
+  # provider reclaims may remove a worker, and the next demand-driven launch can use any configured zone.
+  suspended_processes   = ["AZRebalance"]
+  protect_from_scale_in = false
+  max_instance_lifetime = 86400
   dynamic "launch_template" {
     for_each = length(var.spot_instance_types) == 0 ? [1] : []
     content {
