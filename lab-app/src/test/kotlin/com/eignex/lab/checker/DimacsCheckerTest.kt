@@ -25,10 +25,11 @@ class DimacsCheckerTest {
     @Test fun `production registry covers DIMACS with its own versioned complete point policy`() {
         val root = Files.createTempDirectory("dimacs-registry")
         try {
-            assertEquals(setOf("DIMACS", "XCSP3", "SMTLIB"), Checkers.of(Config(dataDir = root).paths).formats)
+            assertEquals(setOf("DIMACS", "XCSP3", "SMTLIB", "OPB", "WCNF"), Checkers.of(Config(dataDir = root).paths).formats)
             assertEquals(Checkers.formats, Checkers.of(Config(dataDir = root).paths).formats)
             assertTrue(Checkers.covers("dimacs"))
             assertFalse(Checkers.covers("MPS"))
+            assertFalse(Checkers.covers("WBO"))
             assertEquals("lab-dimacs-independent-complete-point-v2", DimacsChecker().policy)
         } finally { root.toFile().deleteRecursively() }
     }

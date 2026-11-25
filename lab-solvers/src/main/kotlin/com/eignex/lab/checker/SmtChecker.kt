@@ -5,22 +5,19 @@ import com.eignex.lab.reference.*
 
 import com.eignex.lab.reference.CorpusFiles
 import java.io.File
-import java.net.URI
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /**
  * Dolmen 0.10 (BSD-2-Clause, github.com/Gbury/dolmen), the pinned release binary for this platform, downloaded once
  * into `<dir>/dolmen-0.10/dolmen` and checked against its SHA-256. The release's macOS file is named `amd64` but is an
- * arm64 Mach-O, which is what the Mac runs. A download that fails is not tried again for [RETRY_MS].
+ * arm64 Mach-O, which is what the Mac runs.
  */
 class Dolmen(
-    private val dir: File,
+    dir: File,
     private val os: String = System.getProperty("os.name"),
     private val arch: String = System.getProperty("os.arch"),
-    private val clock: () -> Long = System::currentTimeMillis,
+    clock: () -> Long = System::currentTimeMillis,
 ) {
-    private var failure: Pair<Long, String>? = null
+    private val pinned = PinnedBinary(dir, "Dolmen", "dolmen", VERSION, clock)
 
     /** The pinned release asset and its SHA-256 for this platform, or null when there is none. */
     val artifact: Pair<String, String>? get() = when {
@@ -29,32 +26,9 @@ class Dolmen(
         else -> null
     }
 
-    @Synchronized
     fun binary(): File {
-        val binary = File(dir, "dolmen-$VERSION/dolmen")
         val (name, pin) = artifact ?: error("no pinned Dolmen $VERSION release for $os $arch")
-        if (binary.canExecute() && sha256(binary) == pin) return binary
-        failure?.let { (at, why) -> if (clock() - at < RETRY_MS) error(why) }
-        try {
-            binary.parentFile.mkdirs()
-            val partial = File.createTempFile("dolmen-", ".part", binary.parentFile)
-            try {
-                URI("$RELEASE/$name").toURL().openConnection().apply { connectTimeout = 30_000; readTimeout = 30_000 }
-                    .getInputStream().use { input -> partial.outputStream().use { input.copyTo(it) } }
-                val sha = sha256(partial)
-                check(sha == pin) { "SHA-256 $sha of $name differs from the pin $pin" }
-                check(partial.setExecutable(true, true)) { "the downloaded Dolmen cannot be made executable" }
-                Files.move(partial.toPath(), binary.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } finally {
-                partial.delete()
-            }
-            failure = null
-            return binary
-        } catch (e: Exception) {
-            val why = "Dolmen $VERSION could not be downloaded: ${e.message}"
-            failure = clock() to why
-            error(why)
-        }
+        return pinned.get("$RELEASE/$name", pin)
     }
 
     companion object {
@@ -62,7 +36,6 @@ class Dolmen(
         const val RELEASE = "https://github.com/Gbury/dolmen/releases/download/v0.10"
         const val LINUX_SHA256 = "bab3e9a1007d5bf6fe5323195e98f95c812fbb108b95a9e02a693ebc4014b675"
         const val MAC_SHA256 = "2141ed2e479f4a0fd97723f34f42cae66156a8c5a20d29da919b12b373da47a1"
-        const val RETRY_MS = 10 * 60_000L
     }
 }
 

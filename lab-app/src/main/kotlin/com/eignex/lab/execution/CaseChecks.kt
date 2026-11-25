@@ -30,6 +30,8 @@ object Checkers {
         "XCSP3" to { Xcsp3Checker() },
         "SMTLIB" to { paths -> SmtChecker(Dolmen(dir(paths))::binary) },
         "DIMACS" to { DimacsChecker() },
+        "OPB" to { paths -> PbChecker("OPB", VeriPb(dir(paths))::binary) },
+        "WCNF" to { paths -> PbChecker("WCNF", VeriPb(dir(paths))::binary) },
     )
 
     /** Registered formats, available without provisioning or running checker tools. */
