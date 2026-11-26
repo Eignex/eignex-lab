@@ -57,7 +57,7 @@ parameters are limited to 120 KiB and decoded text to 24 MiB.
 
 ## OPB and WCNF points
 
-`PbChecker` registers `OPB` under `lab-opb-veripb-3.0.2-point-v1` and `WCNF` under `lab-wcnf-veripb-3.0.2-point-v1`.
+`PbChecker` registers `OPB` under `lab-opb-veripb-3.0.2-point-v1` and `WCNF` under `lab-wcnf-veripb-3.0.2-point-v2`.
 [VeriPB](https://gitlab.com/MIAOresearch/software/VeriPB) 3.0.2 (MIT OR Apache-2.0) publishes no binaries, so the
 `veripb` workflow builds the crates.io crate (SHA-256 `c1b9da43…c4e28b9`) with Rust 1.89.0 and `cargo build --locked`
 into this repository's `veripb-v3.0.2` release: static Linux x86-64 and macOS arm64. The lab downloads its platform's
@@ -75,9 +75,14 @@ Witnesses are competition `v` lines, translated literal by literal without inter
 with an optional final `0`. Other lines or tokens are `invalid`, as are VeriPB's rejections: a constraint conflict,
 a propagated assignment that falsifies a constraint, a contradictory witness or an objective other than the claim.
 A fractional claim is `unknown`. VeriPB reads linear OPB and WCNF with `h` lines; WBO, nonlinear OPB and the older
-`p wcnf` format are `unsupported` in VeriPB's words. A WCNF soft clause with several literals becomes a constraint on
-a blocking variable no witness assigns. When the witness satisfies such a clause, or leaves any objective variable
-unassigned, VeriPB asks for the value and the check is `unknown`; the lab does not complete the assignment.
+`p wcnf` format are `unsupported` in VeriPB's words. An objective variable the witness leaves unassigned is `unknown`.
+
+VeriPB turns a WCNF soft clause `C` with several literals, the `i`th clause of the file counting hard ones, into the
+constraint `C or ~_b<i>` with objective term `~_b<i>`; no witness assigns `_b<i>`. A falsified `C` propagates it
+false. For each such clause the witness satisfies, the lab reads the source as VeriPB's parser does and logs `_b<i>`
+true after the witness, the only value with which that clause costs nothing. VeriPB still checks every constraint and
+the exact objective, so a misnumbered variable can only be rejected, never accepted. Policy `v1` logged none, which
+left every point satisfying such a clause `unknown`.
 
 VeriPB runs under the bounded tool envelope Dolmen uses, with 60 CPU seconds, a 65-second deadline, a 4 GiB
 address space and complete output and cleanup evidence. Anything else it prints is `unknown`; a timeout or

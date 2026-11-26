@@ -46,9 +46,11 @@ class VeriPb(
  * every objective VeriPB reads implies without a proof, so the verdict says nothing about optimality.
  *
  * VeriPB reads linear OPB and the MaxSAT Evaluation 2022+ WCNF format with `h` lines; WBO, nonlinear OPB and the
- * older `p wcnf` format are unsupported in its own words. A WCNF soft clause with several literals becomes a constraint
- * on a blocking variable the witness does not assign; when the witness satisfies such a clause VeriPB asks for that
- * variable's value, and the check is undecided rather than completed by the lab.
+ * older `p wcnf` format are unsupported in its own words. VeriPB turns a WCNF soft clause `C` with several literals, the
+ * `i`th clause of the file counting hard ones, into the constraint `C or ~_b<i>` and the objective term `~_b<i>`. No
+ * witness assigns `_b<i>`: when `C` is falsified, propagation sets it false; when the witness satisfies `C` the lab logs
+ * `_b<i>` true ([blocking]), the only value with which that clause costs nothing. VeriPB still checks every constraint
+ * and the objective itself, so a wrong value can only be rejected.
  */
 class PbChecker(
     override val format: String,
@@ -73,20 +75,21 @@ class PbChecker(
             if (case.field("maximize") == "true") claimed.negate() else claimed
         } else null
         val conclusion = if (bound == null) "conclusion SAT;" else "conclusion BOUNDS $LOWER $bound;"
-        val proof = File(work, "point.pbp").apply {
-            writeText("pseudo-Boolean proof version 3.0\nsol $solution;\noutput NONE;\n$conclusion\nend pseudo-Boolean proof;\n")
-        }
+        val proof = File(work, "point.pbp")
         val binary = veripb()
         val sha = sha256(binary)
         val parser = if (format == "OPB") "--opb" else "--wcnf"
         var plain = ""
         val run = CorpusFiles.withPlainFile(case.sources.model) { source ->
             plain = source.path
+            val blocking = if (format == "WCNF") blocking(source, solution).orEmpty() else emptyList()
+            val logged = (listOf(solution) + blocking).joinToString(" ")
+            proof.writeText("pseudo-Boolean proof version 3.0\nsol $logged;\noutput NONE;\n$conclusion\nend pseudo-Boolean proof;\n")
             ToolProcess.run(listOf(binary.path, parser, source.path, proof.path), work, timeoutMs, env = mapOf("NO_COLOR" to "1"),
                 limits = ToolLimits(CPU_SECONDS, timeoutMs), inputFiles = listOf(source, proof))
         }
         val diagnostic = "command: ${binary.path} $parser <plain copy of ${case.sources.model.path}> point.pbp " +
-            "(`sol` with the witness, then `$conclusion`)\nexit ${run.exit ?: "none (killed)"} after ${run.elapsedMs} ms; output: ${run.tail()}"
+            "(`sol` with the witness and satisfied soft clauses' blocking variables, then `$conclusion`)\nexit ${run.exit ?: "none (killed)"} after ${run.elapsedMs} ms; output: ${run.tail()}"
         val inputs = listOf(CheckedInput(proof.canonicalPath, sha256(proof), proof.readText()))
         fun verdict(state: String, reason: String) = Verdict(state, reason, VeriPb.VERSION, sha,
             diagnostic = diagnostic, resourceReceipts = listOfNotNull(run.resources), inputs = inputs)
@@ -126,6 +129,51 @@ class PbChecker(
             "The given solution is conflicting in itself",
             "mismatches the best recorded upper bound",
         )
+
+        private val TOKEN = Regex("[ \\t\\r\\n]+|c.*|h|[+-]?[0-9]+")
+
+        /**
+         * The blocking variables `_b<i>` VeriPB 3.0.2 gives [source]'s soft clauses of several literals that [solution]
+         * (VeriPB literals, as [solution] makes them) satisfies, read as its WCNF parser reads the file: whitespace, `c` to
+         * the end of the line, `h`, integers; the first integer of a clause is its weight unless `h` came first, a `0`
+         * ends it, and `i` counts every ended clause, hard or soft. A literal names `x` and its digits as written. Null
+         * when VeriPB would not read the file; it then says why itself.
+         */
+        fun blocking(source: File, solution: String): List<String>? {
+            val assigned = solution.split(' ').toHashSet()
+            val out = mutableListOf<String>()
+            var clauses = 0L
+            var hard = false
+            var weighted = false
+            val literals = mutableListOf<String>()
+            source.bufferedReader().useLines { lines ->
+                for (line in lines) {
+                    var at = 0
+                    while (at < line.length) {
+                        val token = TOKEN.matchAt(line, at)?.value ?: return null
+                        at += token.length
+                        when {
+                            token[0].isWhitespace() || token[0] == 'c' -> {}
+                            token == "h" -> { if (hard || weighted) return null; hard = true }
+                            !hard && !weighted -> weighted = true
+                            else -> {
+                                val value = token.toLongOrNull() ?: return null
+                                when {
+                                    value == 0L -> {
+                                        clauses++
+                                        if (!hard && literals.size > 1 && literals.any { it in assigned }) out += "_b$clauses"
+                                        literals.clear(); hard = false; weighted = false
+                                    }
+                                    value < 0 -> literals += "~x" + token.substring(1)
+                                    else -> literals += "x$token"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return out
+        }
 
         private val NAME = Regex("[A-Za-z][A-Za-z0-9_\\[\\]{}^-]+")
         private val BITS = Regex("[01]+")

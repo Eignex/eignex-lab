@@ -73,5 +73,5 @@ object Policies {
     val XCSP3 = "lab-xcsp3-solution-checker-${Xcsp3Checker.VERSION}-v1"
     const val SMTLIB = "lab-smtlib-dolmen-0.10-v2"
     const val OPB = "lab-opb-veripb-3.0.2-point-v1"
-    const val WCNF = "lab-wcnf-veripb-3.0.2-point-v1"
+    const val WCNF = "lab-wcnf-veripb-3.0.2-point-v2"
 }
