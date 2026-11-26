@@ -14,14 +14,18 @@ import kotlin.test.assertNull
 
 /** VeriPB checks OPB and WCNF points: feasibility and the exact claimed objective, never optimality. */
 class PbCheckerTest {
+    private companion object {
+        /** One download for the whole class, kept under the module's build directory and reused by later runs. */
+        val downloaded = runCatching { VeriPb(File("build/tmp/checkers").absoluteFile).binary() }
+    }
+
     private val corpus = Files.createTempDirectory("corpus").toFile()
     private val work = Files.createTempDirectory("checks").toFile()
     private val required = System.getenv("LAB_REQUIRE_CHECKERS") == "1"
 
     private val veripb: File by lazy {
-        val got = runCatching { VeriPb(Files.createTempDirectory("checkers").toFile()).binary() }
-        if (!required) assumeTrue(got.isSuccess, "not available here: ${got.exceptionOrNull()?.message}")
-        got.getOrThrow()
+        if (!required) assumeTrue(downloaded.isSuccess, "not available here: ${downloaded.exceptionOrNull()?.message}")
+        downloaded.getOrThrow()
     }
 
     private fun file(path: String, text: String) = File(corpus, path).apply { parentFile.mkdirs(); writeText(text) }
@@ -104,8 +108,17 @@ class PbCheckerTest {
         assertEquals(LabCheck.VALID, wcnf(clauses, "v 100", "2").state, "a falsified clause's blocking variable propagates")
         assertEquals(LabCheck.INVALID, wcnf(clauses, "v 100", "3").state)
         val blocking = wcnf(clauses, "v 010", "1")
-        assertEquals(LabCheck.UNKNOWN, blocking.state, "a satisfied clause leaves its blocking variable to the witness")
-        assertContains(blocking.reason, "not assigned by the solution")
+        assertEquals(LabCheck.VALID, blocking.state, "a satisfied clause's blocking variable is logged true")
+        assertContains(blocking.inputs.single().text, "sol ~x1 x2 ~x3 _b3;")
+        assertEquals(LabCheck.INVALID, wcnf(clauses, "v 010", "0").state)
+        assertEquals(LabCheck.INVALID, wcnf(clauses, "v 010", "3").state)
+        val split = "c split across lines\nh 1\n 2 0 1 1 0\n2 -1\n3 0 4 -3 0\n"
+        // hard x1 or x2 (clause 1); soft x1 (1), not x1 or x3 (2, clause 3), not x3 (4)
+        val numbered = wcnf(split, "v 011", "5")
+        assertEquals(LabCheck.VALID, numbered.state, "clause numbering follows VeriPB's reader, not lines: ${numbered.reason}")
+        assertContains(numbered.inputs.single().text, "_b3;")
+        assertEquals(LabCheck.VALID, wcnf(split, "v 111", "4").state, "satisfied by its last literal")
+        assertEquals(LabCheck.VALID, wcnf(split, "v 110", "2").state, "falsified, so not logged")
         val old = wcnf("p wcnf 3 3 10\n10 1 2 0\n1 1 0\n4 -3 0\n", "v 011", "5")
         assertEquals(LabCheck.UNSUPPORTED, old.state, old.reason)
     }
@@ -134,5 +147,18 @@ class PbCheckerTest {
         assertNull(PbChecker.solution("v x1;", "OPB"))
         assertNull(PbChecker.solution("v 1 0 2", "WCNF"))
         assertNull(PbChecker.solution("v 012", "WCNF"))
+    }
+
+    @Test
+    fun `satisfied soft clauses of several literals are numbered as VeriPB numbers them`() {
+        fun blocking(source: String, solution: String) = PbChecker.blocking(file("pb-test/b.wcnf", source), solution)
+        val source = "c c h 0\nh 1 2 0\n3 0\n1 1 0\n2 -1 3 0 4 -2 3\n0\n5 1 +3 0\n"
+        assertEquals(listOf("_b4", "_b5", "_b6"), blocking(source, "x1 ~x2 x3"))
+        assertEquals(listOf("_b4"), blocking(source, "~x1 x2 ~x3"))
+        assertEquals(listOf("_b4", "_b5"), blocking(source, "x3"), "+3 names x+3, as VeriPB names it")
+        assertEquals(emptyList(), blocking("h 1 2 0\n", "x1"), "hard clauses never")
+        assertNull(blocking("p wcnf 2 1 3\n3 1 2 0\n", "x1"))
+        assertNull(blocking("h h 1 0\n", "x1"))
+        assertNull(blocking("2 1 h 0\n", "x1"))
     }
 }
