@@ -125,7 +125,8 @@ The job's preparation gets the same vCPUs, at least the queue's `preparationBudg
 both within what the chosen worker offers, so a larger `vcpus` also builds faster. A cloud preparation also takes
 what a running node leaves idle, up to that node's share per compiler slot, so a small job's build need not crawl on
 two vCPUs of an otherwise idle node; solves placed there, and work still waiting for a node, keep theirs. Jobs the local machine may run
-have `vcpus` capped at its cores. Without `vcpus` the lab's default (4) applies; recording modes default to 1.
+have `vcpus` capped at its cores. Without `vcpus` the lab's default (`LAB_DEFAULT_PARALLEL`, 4) applies; recording
+modes default to 1.
 `parallel` is its retired name and still means the same; a spec that gives both must give them equal.
 `lab vcpus <id> <n>` changes it for a running job.
 
@@ -136,18 +137,15 @@ slot per arm: `arms × case CPUs + 1`, so `"vcpus": 5` for four CPU1 arms. Autom
 session only when its granted CPU and memory hold a whole row, and otherwise waits for such a grant instead of
 starting narrower. A worker never starts a row its free slots cannot hold, so every arm of a row starts at once.
 A job whose `vcpus` or the lab's limits can never grant that many slots is refused with the `vcpus` it needs;
-lowering `vcpus` below that on a running job refuses it the same way. Rows, replacement of lost attempts and
-CLI and adapter measurement scopes are unchanged. With `comparison-series`, the setting is part of the
-measurement fingerprint.
-
-If a worker is lost before accepting a complete row, the lab replaces that unfinished row as a whole.
-It does not combine arm A from one machine or attempt with arm B from another. Accepted rows remain
-accepted. Retain failed-attempt and preparation costs, and investigate repeated losses as an operational
-issue separately from the validity of completed same-machine pairs.
+lowering `vcpus` below that on a running job refuses it the same way. With `comparison-series`, the setting is part
+of the measurement fingerprint.
 
 A worker keeps its case slots full: each row runs as its own attempt, all arms together, and as soon as one
 row ends the worker claims the next row whose arms all fit the slots it has free, while its other rows keep
-running. A lost worker gives back every row it was running, each whole.
+running. If a worker is lost before accepting a complete row, the lab replaces that unfinished row as a whole;
+it never combines arm A from one machine or attempt with arm B from another. Accepted rows remain accepted.
+Retain failed-attempt and preparation costs, and investigate repeated losses as an operational issue separately
+from the validity of completed same-machine pairs.
 
 Reference comparisons on a captured source require the same source identity and a recorded reference version.
 Historical rows without either stay visible as history but cannot establish coverage, disagreement or objective
@@ -221,7 +219,9 @@ Repository bench jobs may set top-level `"measurement": "native-startup"` for wo
 MiniZinc discovery sampling. Submit the existing experiment JSON with `deploy/lab run`; omit
 placement tags as usual. This mode defaults to one vCPU and marks every case instrumented,
 including cases where sampling is unavailable. Its times are not ordinary runtime measurements.
-Use an updated coordinator and workers supporting protocol 8; older manifests cannot request this mode.
+It is the only `measurement` mode a bench job accepts: the CLI-recording modes (`resources`, `jfr`, `compilation`,
+`compilation+log`, or `lab run --measurement`) are refused on bench submissions, whose recording settings belong
+in the suite request.
 
 On Mac, a private wrapper identifies the case's supervised process tree. The worker considers
 only an executable named `minizinc` within that case's private worktree, with exactly one argument:
@@ -272,19 +272,16 @@ The API and experiment JSON files use the same flat array:
 {"tags": ["arch:x86_64", "simd:avx2", "!spot"]}
 ```
 
-`tags` is the only placement input for experiments and schedules. The old `nodeTags`, `host`, `auto` and `machines`
-submission fields are rejected. Historical jobs and execution recipes remain readable in their stored format;
-recorded host information describes where a job may run or did run.
+`tags` is the only placement input for experiments and schedules; the retired `nodeTags`, `host`, `auto` and
+`machines` submission fields are rejected.
 
 To replace a job's tags before admission, use `deploy/lab tags 7 'arch:x86_64,!spot'`, or POST
 `{"tags": ["arch:x86_64", "!spot"]}` to `/jobs/7/tags`. `deploy/lab tags 7` clears the selector and restores auto
 placement. Once source preparation or session admission starts, the recipe is frozen and tag edits are refused.
-The old `lab host` and `lab machines` commands and their API overrides are retired.
 
 Schedules use auto by default. Repository recipes can request `"tags": ["local"]`; reference runs and
-legacy confirmations retain their local-only execution policy. Repository bench confirmations preserve the original
-run's placement and pinned build platform instead of being forced onto a native worker. Schedule responses expose the same editable tags
-format, including the local tag for historical local schedules.
+legacy confirmations keep their local-only execution policy. Repository bench confirmations preserve the original
+run's placement and pinned build platform. Schedule responses expose the same editable tags format.
 
 Spot interruption is normal worker replacement. A provider warning stops new claims immediately and gives
 the current row at most 45 seconds to finish inside the host's 60-second drain. Accepted rows remain accepted;
@@ -321,12 +318,9 @@ Each node shows one CPU architecture and primary SIMD profile, such as `x86_64 /
 Detected lower instruction sets remain compatibility capabilities. For AVX2-only placement, require `simd:avx2`
 and exclude `simd:avx512`; for NEON-only placement, exclude `simd:sve` and `simd:sme` as well.
 
-Recording settings belong in the suite request; consult the repository bench documentation.
-Top-level `measurement` is retained only for historical records and is refused on new bench submissions.
-
 `bench.adapterResources=true` requests external GNU time recording of the runtime preflight and SDK `run`
 invocation, including CPU of child processes waited for through that invocation. It requires an explicit
-`platform:linux` tag and a matching updated coordinator with worker protocol 4; older workers refuse that protocol.
+`platform:linux` tag.
 Verify the effective stored option and accepted receipt before using a measurement. Reference arms use their own recordings.
 The case keeps `adapter-resources.txt` and `adapter-resources.json` beside its output directory. The coordinator
 projects them as `labAdapterResources` only after checking their accepted artifact hashes and command identity.
@@ -354,6 +348,8 @@ seconds, 128 files, 1 MiB per file and 16 MiB total, followed by one five-second
 files and collection limits. The authenticated failed attempt can publish only within 120 seconds of its deadline
 fence; ordinary execution, lease renewal and result acceptance remain fenced. Read retained diagnostics through
 `lab files` and `lab fetch`. Missing evidence after abrupt worker loss or a failed upload remains unknown.
+
+## Plan and build reuse
 
 Set `bench.replayJobs` to a map from each new arm label to a completed or failed source job to reuse its
 durably accepted preparation and resolved arm plan. `bench.frozenCases` pins the requested workload subset. Each arm must match
@@ -462,6 +458,8 @@ Queue and placement time remains part of wall-clock turnaround, observable from 
 The whole-run allowance charges active worker attempts, including compiler waits after a claim; time before
 a claim is admission time. Moving a wait before admission does not reduce solver work or erase spent attempt time.
 
+## Preparation and worker diagnostics
+
 Preparation diagnostics are provisional observations retained on the attempt before completion. The execution
 report and preparation details expose the last snapshot: bounded build stdout/stderr tails, observed child exit
 code, the last 16 upload responses (including offsets and retries), resource counters and remaining lease/run time.
@@ -493,6 +491,8 @@ Repository-specific recipes and named workload sets live with their consumers. B
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
 has no implicit solver executable, build layout, corpus selections or JVM profile classpath.
 
+## Source checking
+
 Source validation uses the official XCSP3 checker, Dolmen for SMT-LIB models, VeriPB for OPB and WCNF points and the
 lab's complete DIMACS SAT evaluator. MiniZinc, MPS and WBO retain native results without a lab point check. Native
 optimization completion counts without an independent assignment receipt; checker rejection and checked
@@ -507,9 +507,7 @@ receipts, while `states` counts all outcomes; unsupported cases keep any histori
 
 DIMACS SAT points use the independent complete original-coordinate policy documented in
 [Independent source checking](source-checking.md#original-dimacs-sat-points). Ordinary requested checks and
-ended-case rechecks share the production registry. `checker/dimacs.json` accepts explicit frozen captures and
-retains both paths' receipts; SDK success alone is insufficient. SAT point acceptance supplies no independent
-UNSAT or optimum proof. Resource and unavailable checks remain unchecked.
+ended-case rechecks share the production registry.
 
 ## Retained artifacts
 
@@ -534,7 +532,7 @@ The detail contains no file names, paths or exception text. `currentValidated=fa
 proof that this unavailable request passed validation. Reading these diagnostics does not probe storage or start
 another refresh; a new successful request still returns the complete ordinary inventory array.
 
-## Controlled sweep migrations
+## Benchmark trends and confirmations
 
 Opt-in `metric-v1` benchmark sweeps show regression counts by exact engine and absolute timings
 for one selected workload, size and storage. Every workload uses its own positive timing and slowdown
@@ -566,8 +564,7 @@ The run table retains case outcomes, changes and paired confirmations. Paired co
 recorded neighboring revisions and are labeled separately from the fixed-baseline candidates; an engine
 confirmation is attached to a baseline candidate only when workload, metric and baseline revision match.
 Skipped and pending cases are never labeled incorrect. `lab trend <schedule-name>` reads the plotted
-points as JSON. Renaming a schedule preserves its job history. Benchmark cache format 6 refreshes the
-engine attribution and workload controls without invalidating solver points.
+points as JSON. Renaming a schedule preserves its job history.
 
 For local graph-model coverage, run `node --test lab-app/src/test/js/benchmark-history.test.cjs`.
 
@@ -598,32 +595,31 @@ Flips between successive scheduled runs are candidates: they need equal logical 
 execution frame, and only queue the paired confirmation that carries the attribution.
 Preparation resources are separate from these solve observations.
 
-Paired confirmations use the coordinator's accepted worker attempt for each row.
-All arms of one workload, seed and repetition run on the same machine in that attempt;
-missing CPU identity metadata does not invalidate this pairing. Automatic placement
-may use different compatible machines for different rows and preparation attempts.
-A replacement executes the complete unfinished row; arms from different attempts
-cannot vote together. Failed-attempt costs remain retained. The store supplies this
-pairing authority independently of repository records and worker protocol fields.
+Paired confirmations take their pairing from the coordinator's accepted worker attempt for each row (see
+[Experiments](#experiments)), not from repository records; missing CPU identity metadata does not invalidate it.
 
 Every feasibility/proof/objective vote uses a complete matching seed/repeat block;
 failed, duplicate or absent blocks cannot vote and remain in the denominator.
 Confirmations preserve each affected source's solver seeds and repeat the paired
 blocks three times. A persistent unproved objective loss is one worse than the same
 retained baseline in two successive runs; the bounded confirmation compares that
-baseline with the latest run, even when the worse objective plateaus. At most40
+baseline with the latest run, even when the worse objective plateaus. At most 40
 sources are selected; other losses remain unconfirmed. Occasional fixed multi-seed
 baselines are repository-owned recipes, separate from per-commit trend lines.
-Requests with `comparison-series` retain explicit `vcpus` in their measurement
-fingerprint; `vcpus=1` keeps the fingerprint `parallel=1` had, while larger values start new
-series because they now run one case fewer. Canonical CPU1 controls use `vcpus=1`; preparation and solve grants
+Requests with `comparison-series` include `vcpus` in their measurement fingerprint; `vcpus=1` keeps the
+fingerprint of earlier `parallel=1` runs, while larger values start a new series.
+Canonical CPU1 controls use `vcpus=1`; preparation and solve grants
 are separate, and the actual iteration cgroup receipt controls physical accounting.
 Parallel CLI/JIT/harness processes share the aggregate group grant. Cgroup CPU
 counters can accumulate across iterations; sampled current memory is not a peak.
 Independent witness checks retain their policy and unsupported states. Native
 optimality/UNSAT flags remain distinct from independently checked source proofs.
 
-## Schedule names and ordering
+## Schedules
+
+Schedules are listed by priority, highest first, with creation order breaking ties. Rename a schedule with
+`deploy/lab rename-schedule <id> <name>`. Its ID, last revision, check cadence and all scheduled run and confirmation
+history are retained; the renamed series continues comparing with its existing baseline.
 
 ### Klause sweep resource policy
 
@@ -633,25 +629,17 @@ under an enforced cgroup CPU and memory budget. Preparation has its own grant. P
 different rows can use different compatible nodes, while every confirmation row keeps both revisions together
 in one worker attempt. Adapter resource observations supplement the accepted worker receipts.
 
-This policy starts the `klause-sweep-linux-cpu1-v1` comparison series. Keep the 10-second solver limit, seed,
-source validation and repository-owned sweep selection. Mac history remains available, but its wall times are
-not a solver-only baseline for the new platform. A cgroup quota is a limit, not a dedicated physical core or a
-promise of noise-free timings; paired confirmations still decide regression attribution.
+The recipe uses the `klause-sweep-linux-cpu1-v1` comparison series with a 10-second solver limit, source validation
+and the repository-owned sweep selection. Earlier Mac history remains available, but its wall times are not a
+solver-only baseline for this series. A cgroup quota is a limit, not a dedicated physical core or a promise of
+noise-free timings; paired confirmations still decide regression attribution.
 
-Apply the recipe to the existing schedule, preserving its ID and history:
+Apply a changed recipe to the existing schedule, preserving its ID and history:
 
 ```sh
 deploy/lab reschedule 2 deploy/schedules/klause-sweep.json
 ```
 
-Before applying it, run a bounded copy at an exact revision and inspect `labExecution.frame`: require
-`enforcement=cgroup-v2-hard`, a finite `cpuMax` matching the one-CPU grant, finite `memoryMax`, and worker
-parallelism of one. Confirm that selected source identities match the old sweep and that paired confirmation
-receipts put all arms of each row on the same worker attempt. Record the validation job and any unsuccessful
-attempts separately. Merely changing a selector or seeing the API accept a schedule is not rollout evidence.
-
-### Renaming
-
-Schedules are listed by priority, highest first, with creation order breaking ties. Rename a schedule with
-`deploy/lab rename-schedule <id> <name>`. Its ID, last revision, check cadence and all scheduled run and confirmation
-history are retained; the renamed series continues comparing with its existing baseline.
+Validate a changed recipe first with a bounded copy at an exact revision: its `labExecution.frame` must show
+`enforcement=cgroup-v2-hard`, a finite `cpuMax` matching the one-CPU grant, a finite `memoryMax` and worker
+parallelism of one, and its paired confirmation receipts must put all arms of each row on the same worker attempt.
