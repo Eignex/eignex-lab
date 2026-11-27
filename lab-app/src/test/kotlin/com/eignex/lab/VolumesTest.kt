@@ -248,6 +248,16 @@ class VolumesTest {
     }
 
     @Test
+    fun `a directory's own permissions refusing the probe still names the fix`() {
+        val dir = Files.createTempDirectory("refused")
+        val access = VolumeAccess(TIMEOUT_MS, 0, JAVA) { _, path -> throw java.nio.file.AccessDeniedException(path.toString()) }
+
+        val problem = access.check(Volumes.CORPUS, dir)!!
+
+        assertTrue(problem.endsWith("grant Full Disk Access to $JAVA in System Settings → Privacy & Security → Full Disk Access"), problem)
+    }
+
+    @Test
     fun `one probe of a directory is in flight at a time, and a stuck one answers at once until its call returns`() {
         val lab = Blocked(freshMs = 0)
 
