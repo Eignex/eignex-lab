@@ -88,9 +88,11 @@ private suspend fun requireJobFiles(paths: DataPaths) {
 
 /** The last [bytes] of a file that may still be growing. */
 private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").use { raf ->
-    val start = maxOf(0, raf.length() - bytes)
+    // One length for both ends: a second read could see the file grown past the requested tail, or truncated below start.
+    val length = raf.length()
+    val start = maxOf(0, length - bytes)
     raf.seek(start)
-    val buffer = ByteArray((raf.length() - start).toInt())
+    val buffer = ByteArray((length - start).toInt())
     raf.readFully(buffer)
     String(buffer)
 }
