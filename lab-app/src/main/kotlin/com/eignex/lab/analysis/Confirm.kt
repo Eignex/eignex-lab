@@ -167,8 +167,7 @@ object Confirm {
         val stats = record["stats"] as? JsonObject
         val rawExact = if (reported) stats?.get("reportedExactObjective") else record["exactObjective"]
         if (rawExact != null && rawExact !is JsonPrimitive) return null
-        val exact = rawExact as? JsonPrimitive
-        val text = exact?.content?.takeUnless { it == "null" }
+        val text = rawExact?.content?.takeUnless { it == "null" }
         if (text != null) return Exact.parse(text)
         val value = ((if (reported) stats?.get("reportedObjective") else record["objective"]) as? JsonPrimitive)
             ?.content?.takeUnless { it == "null" } ?: return null

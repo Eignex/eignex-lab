@@ -189,7 +189,7 @@ internal class JobFileInventory(
             task?.let { (now - it.at).coerceAtLeast(0) } ?: failure?.elapsedMs ?: 0,
             task?.let { (now - it.phaseAt).coerceAtLeast(0) } ?: failure?.phaseElapsedMs ?: 0,
             failure?.category, failure?.phase, failedAt?.let { (now - it).coerceAtLeast(0) }, age,
-            snapshot?.let { entry?.snapshotInvalidated == true ||
+            snapshot?.let { entry.snapshotInvalidated ||
                 requireNotNull(age) > (if (it.key.status.isTerminal) endedAgeMs else activeAgeMs) },
             failedAt?.let { (retryMs - (now - it)).coerceIn(0, retryMs) } ?: 0)
     }
