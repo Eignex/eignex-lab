@@ -247,15 +247,4 @@ class RunnerTest {
         assertFalse(child.map { it.isAlive }.orElse(false))
     }
 
-    /** A runner over a fresh lab, its store and a job of [commands] taken and set up, ready for [Runner.dispatch]. */
-    private fun eventually(check: () -> Boolean): Boolean {
-        val until = System.currentTimeMillis() + 10_000
-        while (System.currentTimeMillis() < until) {
-            if (check()) return true
-            Thread.sleep(50)
-        }
-        return check()
-    }
-
-
 }

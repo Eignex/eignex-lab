@@ -275,8 +275,4 @@ class StoreTest {
         assertEquals(false, ran.launchRequested)
     }
 
-    private fun autoJob(store: Store, name: String, priority: Int = 0, host: HostPlacement = Experiments.AUTO_HOST) =
-        store.create(name, "main", emptyList(), priority = priority,
-            experiment = ExperimentSpec(name, listOf(mapOf("suite" to "s")), host = host))
-
 }

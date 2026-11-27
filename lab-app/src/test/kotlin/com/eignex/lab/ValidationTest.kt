@@ -58,28 +58,6 @@ class ValidationTest {
         "sourceValidationScope":"ground-original-mps-witness","floatApproximation":"false","reportedFeasible":"true",
         "reportedObjective":"892384.9959999999","reportedProven":"false"}}"""
 
-    /**
-     * Job 7068, case 48 (miplib2003/opt1217), trimmed: a bench built without the MIPLIB solchecker withdrew the
-     * solver's solution, though the checker never ran. Its producer record is cut to the fields the lab reads.
-     */
-    private val checkerMissing = """{"problem":"opt1217","solver":"klause","engine":null,"processors":1,"search":"free",
-        "seed":3,"budgetMs":10000,"kind":"optimize","maximize":false,"feasible":null,"objective":null,"timeToBestMs":null,
-        "timeToFirstFeasibleMs":null,"proven":false,"gitSha":"b417cf18b074785b295b14141aa868b15135d36b",
-        "command":"klause-cli --format mps opt1217.mps.zst -t 10000 -r 3 -s -a --output-objective","elapsedMs":10168,
-        "validationPolicy":"mps-miplib2017-point-gzip-v1","stats":{"sourceConclusion":"satisfiable","solveTime":"9.162",
-        "sourceValidation":"unknown","sourceValidationReason":"MPS source checking failed: missing packaged MIPLIB solchecker",
-        "sourceValidationScope":"ground-original-mps-witness","reportedFeasible":"true","reportedObjective":"-16.0",
-        "reportedExactObjective":"-16","reportedProven":"false",
-        "sourceValidationProducerRecordJson":"{\"problem\":\"opt1217\",\"feasible\":true,\"objective\":-16.0,\"timeToBestMs\":3651,\"proven\":false}"}}"""
-
-    /** Job 7068, case 55 (miplib2010/ex9), trimmed: the checker ran and could not read the input; the claim stands. */
-    private val unreadable = """{"problem":"ex9","solver":"klause","budgetMs":10000,"kind":"optimize","maximize":false,
-        "feasible":null,"objective":null,"timeToBestMs":null,"proven":false,"command":"klause-cli","elapsedMs":10200,
-        "validationPolicy":"mps-miplib2017-point-gzip-v1","stats":{"solveTime":"9.5","sourceValidation":"unknown",
-        "sourceValidationReason":"MPS source checking failed: lower bounds following upper bounds are unsupported",
-        "sourceValidationScope":"ground-original-mps-witness","reportedFeasible":"true","reportedObjective":"81.0",
-        "reportedExactObjective":"81","reportedProven":"false"}}"""
-
     private fun outcome(record: String) = Outcome.of(Json.parseToJsonElement(record))!!
 
     private fun case(arm: String, problem: String, record: String) =
