@@ -282,6 +282,22 @@ class AwsApiTest {
         }
     }
 
+    @Test fun `a credential process that never exits fails at its timeout`() {
+        val home = Files.createTempDirectory("aws-home")
+        try {
+            Files.createDirectories(home.resolve(".aws"))
+            // The child keeps standard output open, as an interactive `aws login` waiting for a browser does.
+            Files.writeString(home.resolve(".aws/config"), "[profile hung]\ncredential_process = sleep 30\n")
+            val credentials = AwsProfileCredentials("hung", mapOf("HOME" to home.toString()), processTimeout = Duration.ofMillis(300))
+            val started = System.nanoTime()
+            assertFailsWith<IllegalStateException> { credentials() }
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue(elapsedMs < 10_000, "the process is abandoned at its timeout, not awaited ($elapsedMs ms)")
+        } finally {
+            home.toFile().deleteRecursively()
+        }
+    }
+
     @Test fun `STS AssumeRole is a query action at the regional endpoint`() {
         val http = RecordingHttp { _, _, _ ->
             ok("""<AssumeRoleResponse><AssumeRoleResult><Credentials><AccessKeyId>ASIA</AccessKeyId><SecretAccessKey>s2</SecretAccessKey>
