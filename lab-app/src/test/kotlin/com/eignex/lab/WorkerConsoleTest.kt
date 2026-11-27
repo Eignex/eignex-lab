@@ -27,6 +27,19 @@ class WorkerConsoleTest {
     }
 
     @Test
+    fun `a retry whose reply was lost may carry what the file gained since`() {
+        val root = Files.createTempDirectory("worker-console-retry")
+        val logs = WorkerLogs(Store(root.resolve("lab.db"))) { root }
+        val session = ExecutionSession("session-1", 7, 1, ExecutionClass.SOLVE, "release", ResourceBudget(1000, 512),
+            "nomad-solve", Desired.STOP, null, null)
+
+        assertEquals(6, logs.appendWorker(session, 0, "start\n".toByteArray()))
+        assertEquals(11, logs.appendWorker(session, 0, "start\nmore\n".toByteArray()))
+        assertFailsWith<IllegalArgumentException> { logs.appendWorker(session, 0, "other\nmore\nyet\n".toByteArray()) }
+        assertEquals("start\nmore\n", Files.readString(WorkerLogs.workerPath(root, "session-1")))
+    }
+
+    @Test
     fun `the console is copied to its file without changing what it prints, up to its cap`() {
         val file = Files.createTempDirectory("worker-console").resolve("worker-console.log")
         val printed = java.io.ByteArrayOutputStream()
