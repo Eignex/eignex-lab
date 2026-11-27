@@ -68,7 +68,7 @@ jobs:
       - name: Verify bench SDK release assets
         run: ./gradlew :lab-bench:verifyRelease
       - name: Validate service installation
-        run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh
+        run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh && bash deploy/tests/test_lab_wait.sh
       - name: Verify host maintenance
         run: bash deploy/tests/test_host_maintenance.sh && bash deploy/tests/test_worker_rollout.sh
       - name: Build distribution for DIMACS controls
@@ -141,7 +141,7 @@ jobs:
         with:
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       - name: Validate service installation
-        run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh
+        run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh && bash deploy/tests/test_lab_wait.sh
       - name: Verify host maintenance
         run: bash deploy/tests/test_host_maintenance.sh && bash deploy/tests/test_worker_rollout.sh
       # Also on Linux in nomad-infrastructure; here for macOS's own awk, sort and shasum.

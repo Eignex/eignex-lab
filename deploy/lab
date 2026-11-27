@@ -321,8 +321,17 @@ priority) jq -n --argjson priority "$2" '{priority: $priority}' |
 wait)
   for id in "$@"; do
     while :; do
-      # The server holds the request until the job ends; a dropped connection is simply retried.
-      status=$(curl -fsS --max-time 660 "$url/jobs/$id/wait?timeoutSec=600" | jq -r .status) || { sleep 10; continue; }
+      # The server holds the request until the job ends; a dropped connection or a server error is simply retried,
+      # but a refused request (an unknown or deleted job, a wrong password) never succeeds and ends the wait.
+      response=$(curl -sS --max-time 660 -w '\n%{http_code}' "$url/jobs/$id/wait?timeoutSec=600") || { sleep 10; continue; }
+      code="${response##*$'\n'}"
+      case "$code" in
+      200) ;;
+      408 | 429 | 5??) sleep 10; continue ;;
+      404) echo "lab wait: no job $id" >&2; exit 1 ;;
+      *) echo "lab wait: job $id: HTTP $code: ${response%$'\n'*}" >&2; exit 1 ;;
+      esac
+      status=$(jq -r .status <<< "${response%$'\n'*}") || { sleep 10; continue; }
       case "$status" in DONE | FAILED | CANCELLED) echo -e "$id\t$status"; break ;; esac
     done
   done ;;
