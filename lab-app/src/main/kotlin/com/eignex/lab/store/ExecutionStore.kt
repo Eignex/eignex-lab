@@ -3,15 +3,11 @@ package com.eignex.lab.store
 import com.eignex.lab.domain.*
 import com.eignex.lab.util.*
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.sql.Connection
 import java.sql.ResultSet
-import java.sql.SQLException
 
 internal data class PreparationExitFailure(val count: Int, val stage: String, val release: String)
 
@@ -334,12 +330,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     private fun Tx.failRunDeadline(job: Long, at: Long) {
-        sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
-            .forEach { invalidate(it, "run-timeout", at) }
-        sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE job_id = ?", job, map = ::sessionRow).forEach { s ->
-            sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", s.id); stopIntent(s)
-        }
-        sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
+        stopWork(job, "run-timeout", at)
         sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND status IN ('QUEUED', 'RUNNING')",
             RunDeadlineExceeded.ERROR, at, at, job)
         event(job, null, "profile-run-timeout", at)
@@ -388,13 +379,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         if (store.job(prior.jobId)?.let { it.status == Status.FAILED && it.error == reason } == true) return@executionTransaction
         val attempt = db.attempt(owner, at)
         require(attempt.state in setOf(AttemptState.CLAIMED, AttemptState.PREPARING)) { "build failure outside preparation" }
-        db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", attempt.jobId, map = ::attemptRow)
-            .forEach { db.invalidate(it, "source-build-failed", at) }
-        db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE job_id = ?", attempt.jobId, map = ::sessionRow).forEach { session ->
-            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id); db.stopIntent(session)
-        }
+        db.stopWork(attempt.jobId, "source-build-failed", at)
         db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND status IN ('QUEUED', 'RUNNING')", reason, at, at, attempt.jobId)
-        db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", attempt.jobId)
         db.event(attempt.jobId, owner.session, "source-build-failed", at)
     }
 
@@ -404,9 +390,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         require(attempt.iteration == "preparation" && attempt.state == AttemptState.PREPARING)
         val event = "preparation-error:$fingerprint"
         db.event(attempt.jobId, owner.session, event, at)
-        db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
-            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
-            attempt.jobId, event, attempt.jobId) { it.getInt(1) }.single()
+        db.countSinceRetry(attempt.jobId, event)
     }
 
     /** Called only with positive Nomad evidence of a worker's nonzero, unsignalled process exit. */
@@ -422,9 +406,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         val detail = "preparation-worker-exit:$fingerprint:exit=$code,stage=$stage,release=${session.release}"
         if (db.sqlRows("SELECT 1 FROM execution_events WHERE session_id = ? AND detail = ?", id, detail) { true }.isEmpty())
             db.event(session.jobId, id, detail, at)
-        val count = db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
-            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
-            session.jobId, detail, session.jobId) { it.getInt(1) }.single()
+        val count = db.countSinceRetry(session.jobId, detail)
         // The worker reports what ended it before exiting; carry it into the failure, which is all the job log shows.
         val error = db.sqlRows("""SELECT json_extract(preparation_diagnostics, '$.error') FROM iteration_attempts
             WHERE job_id = ? AND iteration_id = 'preparation' AND json_extract(preparation_diagnostics, '$.error') IS NOT NULL
@@ -445,9 +427,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         val key = "worker-startup-failure:$fingerprint"
         if (db.sqlRows("SELECT 1 FROM execution_events WHERE session_id = ? AND detail = ?", id, key) { true }.isEmpty())
             db.event(session.jobId, id, key, at)
-        val count = db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
-            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
-            session.jobId, key, session.jobId) { it.getInt(1) }.single()
+        val count = db.countSinceRetry(session.jobId, key)
         if (count >= 3) db.failActive(session.jobId,
             "Nomad worker startup stopped after $count identical executable launch failures; fix the worker runtime and retry: ${diagnostic.take(8192)}", at)
         count
@@ -668,13 +648,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     private fun Tx.failActive(job: Long, error: String, at: Long) {
         val changed = sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, at, at, job)
         if (changed == 0) return
-        sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
-            .forEach { invalidate(it, "failed", at) }
-        sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE job_id = ? AND desired != 'stop'", job, map = ::sessionRow).forEach { session ->
-            sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id)
-            stopIntent(session)
-        }
-        sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
+        stopWork(job, "failed", at)
         event(job, null, "failed:${error.take(1024)}", at)
     }
     fun finishIfComplete(job: Long): Boolean = store.executionTransaction { db ->
@@ -738,7 +712,6 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     fun checksComplete(job: Long): Set<Int> = store.executionRead { db -> db.sqlRows("SELECT idx FROM execution_checks WHERE job_id = ?", job) { it.getInt(1) }.toSet() }
 
-    /** Rollback needs an external proof of stopped allocations; never expose as a backend toggle. */
     /** Whether [jobId]'s execution began: its recipe was frozen for admission, or a session was opened for it. */
     internal fun started(db: Tx, jobId: Long): Boolean =
         db.sqlRows("SELECT 1 FROM execution_queue_recipes WHERE job_id = ? UNION ALL SELECT 1 FROM execution_sessions WHERE job_id = ? LIMIT 1",
@@ -750,16 +723,22 @@ class ExecutionStore internal constructor(private val store: Store) {
             SELECT 1 FROM execution_outbox o WHERE o.id = s.id || ':stop' AND o.acknowledged = 1)) LIMIT 1""", jobId) { true }.isNotEmpty()
 
     internal fun cancelIn(db: Tx, jobId: Long, at: Long) {
-        db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", jobId, map = ::attemptRow)
-            .forEach { db.invalidate(it, "cancelled", at) }
-        db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE job_id = ?", jobId, map = ::sessionRow).forEach { s ->
-            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", s.id)
-            db.stopIntent(s)
-        }
+        db.stopWork(jobId, "cancelled", at)
         db.sqlUpdate("UPDATE jobs SET status = 'CANCELLED', cancel_requested = 1, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), " +
             "running_since = NULL, local = 0, paused = 0 WHERE id = ?", at, at, jobId)
-        db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", jobId)
         db.event(jobId, null, "cancelled", at)
+    }
+
+    /** End [job]'s work: its active attempts become [attemptState], every session of it is told to stop, and its
+     *  unfinished commands are cancelled. */
+    private fun Tx.stopWork(job: Long, attemptState: String, at: Long) {
+        sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
+            .forEach { invalidate(it, attemptState, at) }
+        sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE job_id = ?", job, map = ::sessionRow).forEach { s ->
+            sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", s.id)
+            stopIntent(s)
+        }
+        sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
     }
 
     private fun Tx.stopIntent(s: ExecutionSession) {
@@ -816,7 +795,12 @@ class ExecutionStore internal constructor(private val store: Store) {
         val key = if (r.getObject("problem_idx") == null) "command:${r.getInt("idx")}" else "${r.getInt("problem_idx")}:${r.getObject("seed") ?: "none"}:${r.getInt("repeat")}"
         IterationRow(r.getInt("idx"), r.getString("status"), r.getString("host"), key)
     }.groupBy { it.key }
-    private fun Tx.event(job: Long, session: String?, detail: String, at: Long) = sqlUpdate("INSERT INTO execution_events (job_id, session_id, detail, at) VALUES (?, ?, ?, ?)", job, session, detail, at)
+    /** How many [detail] events [job] logged since its last manual retry. */
+    private fun Tx.countSinceRetry(job: Long, detail: String): Int =
+        sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
+            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
+            job, detail, job) { it.getInt(1) }.single()
+    private fun Tx.event(job: Long, session: String?, detail: String, at: Long) =sqlUpdate("INSERT INTO execution_events (job_id, session_id, detail, at) VALUES (?, ?, ?, ?)", job, session, detail, at)
 
     companion object {
         const val LEASE_MS = 90_000L
@@ -844,8 +828,6 @@ class ExecutionStore internal constructor(private val store: Store) {
             }
         }
         private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"), r.getString("result_sha256"), r.getString("claim_id"))
-        /** Manifest keys every session of a job repeats, kept once each ([splitManifest]). */
-        /** Preparation result keys its job's session manifests repeat, kept once in the same table ([splitResult]). */
         /** [result] as a committed attempt keeps it: without its case records, which `cases` keeps. */
         internal fun slim(result: IterationResult) = result.copy(cases = result.cases.map { it.copy(record = null) })
     }
