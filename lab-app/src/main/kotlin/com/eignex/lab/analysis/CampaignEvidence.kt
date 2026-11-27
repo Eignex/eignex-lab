@@ -37,8 +37,8 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Package and verify campaign evidence without extracting archives: `eignex-lab campaign-evidence pack <root> <output>`
- * and `eignex-lab campaign-evidence verify <archive> <manifest>` (see deploy/SETUP.md). Such an archive, placed under
- * the lab's archive directory, is what an analysis job analyses saved captures from ([CaptureArchives]), verified by
+ * and `eignex-lab campaign-evidence verify <archive> <manifest>`. Such an archive, placed under the
+ * lab's archive directory, is what an analysis job analyses saved captures from ([CaptureArchives]), verified by
  * [verify] first. An archive is a gzipped POSIX tar of every staged file in path order, with no times, owners or modes
  * beyond 0644, so packing the same tree twice gives the same bytes. Its manifest is JSON as Python's
  * `json.dumps(indent=2, sort_keys=True)` writes it, the form the first snapshots were made in, and verification accepts
