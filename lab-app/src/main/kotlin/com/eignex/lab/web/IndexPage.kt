@@ -278,8 +278,7 @@ private fun workKind(status: StatusSettings, job: Job): WorkKind =
  * The block above the Active table: the work scheduled, in estimated core-hours ([estimates], by
  * job) split by where it may run, and the time the local machine alone would take to drain what it
  * may run: the sum of those jobs' own wall times, as the local machine runs one job at a time.
- * Then, with cloud settings, the launch gauge ([launchGauge]). Paused jobs and ones whose cancel
- * was requested wait for nothing, so they are not counted.
+ * Paused jobs and ones whose cancel was requested wait for nothing, so they are not counted.
  */
 internal fun workSummary(
     status: StatusSettings,
