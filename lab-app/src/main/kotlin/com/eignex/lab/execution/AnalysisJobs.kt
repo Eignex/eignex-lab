@@ -12,7 +12,6 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.name
-import kotlinx.serialization.json.Json
 
 /** Runs the lab's own analysis jobs: compilation reports over retained or archived captures, and source rechecks. */
 internal class AnalysisJobs(private val paths: DataPaths, private val archives: ArchiveLimits, private val store: Store, private val checks: CaseChecks) {

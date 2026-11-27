@@ -2,7 +2,6 @@ package com.eignex.lab.execution
 
 import com.eignex.lab.domain.*
 import com.eignex.lab.store.*
-import com.eignex.lab.util.hex
 import com.eignex.lab.util.fileLockFor
 import com.eignex.lab.util.deleteTree
 import java.io.InputStream

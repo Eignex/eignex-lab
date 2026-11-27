@@ -2,32 +2,12 @@ package com.eignex.lab.util
 
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
-import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.nio.file.Files
-import java.nio.file.LinkOption
-import java.nio.file.Path
-import java.nio.file.StandardOpenOption
-import java.security.MessageDigest
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import java.util.zip.DeflaterOutputStream
-import java.util.zip.GZIPInputStream
-import kotlin.io.path.exists
-import kotlin.io.path.fileSize
-import kotlin.io.path.isDirectory
-import kotlin.io.path.isRegularFile
-import kotlin.io.path.isSymbolicLink
 import kotlin.io.path.name
-import kotlin.io.path.readText
-import kotlin.io.path.writeText
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 
 /* Deterministic tar and gzip, as the campaign evidence bundles and capture archives are written and read. */
 

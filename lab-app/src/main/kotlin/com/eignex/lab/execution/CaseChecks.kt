@@ -18,7 +18,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import com.eignex.lab.domain.REFERENCE_BACKEND
-import com.eignex.lab.analysis.SourceValidation
 import com.eignex.lab.execution.SharedCheckInputUnavailable
 import com.eignex.lab.execution.SharedInputs
 import com.eignex.lab.store.Store
