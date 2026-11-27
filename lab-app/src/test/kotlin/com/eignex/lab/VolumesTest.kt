@@ -201,16 +201,6 @@ class VolumesTest {
             dockerCleanupDays = 0, volumeAccess = access)
     }
 
-    /** Wait up to [ms] for [condition]. */
-    private fun eventually(ms: Long = 10_000, condition: () -> Boolean): Boolean {
-        val end = System.currentTimeMillis() + ms
-        while (System.currentTimeMillis() < end) {
-            if (condition()) return true
-            Thread.sleep(20)
-        }
-        return condition()
-    }
-
     @Test
     fun `a probe that hangs times out and the directory cannot be used, naming the java to grant Full Disk Access`() {
         val lab = Blocked()

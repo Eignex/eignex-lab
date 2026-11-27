@@ -217,9 +217,7 @@ class ConnectedNomadTest {
             assertTrue(Files.readString(root.resolve("jobs/$job/cases/0/out/record.json")).contains("fixture"))
             assertTrue(Files.list(root.resolve("jobs/$job/nomad")).use { files -> files.anyMatch { it.fileName.toString().endsWith("-2-resources.json") } }, "replacement committed generation 2")
             val acceptedAllocation = assertNotNull(store.execution.reports(job).single { it.committed > 0 }.session.allocation)
-            val exited = System.nanoTime() + 10_000_000_000
-            while (client.allocation(acceptedAllocation)?.client !in setOf("complete", "failed", "lost") && System.nanoTime() < exited) Thread.sleep(100)
-            assertTrue(client.allocation(acceptedAllocation)?.client in setOf("complete", "failed", "lost"), "accepted worker exited")
+            assertTrue(eventually(10_000, 100) { client.allocation(acceptedAllocation)?.client in setOf("complete", "failed", "lost") }, "accepted worker exited")
             val reports = store.execution.reports(job)
             val failedResources = assertNotNull(reports.single { it.session.id == session.id }.resources)
             assertTrue(assertNotNull(failedResources.cpuUsec) > 0, "failed worker cost checkpoint survived allocation loss")

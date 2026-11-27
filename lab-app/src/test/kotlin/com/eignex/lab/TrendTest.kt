@@ -300,11 +300,9 @@ class TrendTest {
         Trend.warm(TrendData.of(store), cache)
 
         val job = store.job(older)!!
-        val deadline = System.currentTimeMillis() + 10_000
-        while (cache.lookup(older, TrendCache.version(job, TrendData.of(store).caseRevision(older)), store.references.stamp()) == null && System.currentTimeMillis() < deadline) {
-            Thread.sleep(20)
-        }
-        assertEquals(older, cache.lookup(older, TrendCache.version(job, TrendData.of(store).caseRevision(older)), store.references.stamp())?.run?.job)
+        fun stored() = cache.lookup(older, TrendCache.version(job, TrendData.of(store).caseRevision(older)), store.references.stamp())
+        assertTrue(eventually { stored() != null })
+        assertEquals(older, stored()?.run?.job)
     }
 
     @Test
@@ -315,8 +313,10 @@ class TrendTest {
 
         repeat(3) { cache.refreshLater("sweep") { ran.incrementAndGet(); gate.await() } }
         gate.countDown()
-        cache.refreshLater("other") {}
-        Thread.sleep(200)
+        // Refreshes run in order on one thread, so a later key's refresh runs only after any sweep refresh queued before it.
+        val drained = java.util.concurrent.CountDownLatch(1)
+        cache.refreshLater("other") { drained.countDown() }
+        assertTrue(drained.await(10, java.util.concurrent.TimeUnit.SECONDS))
 
         assertEquals(1, ran.get())
     }
@@ -333,8 +333,7 @@ class TrendTest {
 
         assertEquals(emptyList(), first.map { it.job })
         assertEquals(listOf(done, going), missing)
-        val deadline = System.currentTimeMillis() + 10_000
-        while (cache.stored(listOf(done, going)).size < 2 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertTrue(eventually { cache.stored(listOf(done, going)).size == 2 })
         val later = ArrayList<Long>()
         assertEquals(listOf(done, going), Trend.stored(TrendData.of(store), "sweep", cache, missing = later).map { it.job })
         assertEquals(emptyList(), later)
