@@ -1,4 +1,4 @@
-# 1. Independent source checking
+# Independent source checking
 
 The lab checks retained assignments against original source bytes through pinned external checkers: the official
 XCSP3 solution checker, Dolmen for SMT-LIB models and VeriPB for OPB and WCNF points. The only lab-owned evaluator

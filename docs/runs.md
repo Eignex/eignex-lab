@@ -497,7 +497,7 @@ Source validation uses the official XCSP3 checker, Dolmen for SMT-LIB models, Ve
 lab's complete DIMACS SAT evaluator. MiniZinc, MPS and WBO retain native results without a lab point check. Native
 optimization completion counts without an independent assignment receipt; checker rejection and checked
 counterexamples still withdraw claims. Assignment validity and native completion are separate evidence.
-See [Independent source checking](01-source-checking.md) for qualification and supported checker boundaries.
+See [Independent source checking](source-checking.md) for qualification and supported checker boundaries.
 When source validation was requested for a format without a registered checker, the job page says which formats
 are unavailable. This is a normal result; requesting validation does not require a checker for every format.
 
@@ -506,7 +506,7 @@ including unsupported formats and failures to read or check a retained record. `
 receipts, while `states` counts all outcomes; unsupported cases keep any historical receipt. No solver runs.
 
 DIMACS SAT points use the independent complete original-coordinate policy documented in
-[Independent source checking](01-source-checking.md#original-dimacs-sat-points). Ordinary requested checks and
+[Independent source checking](source-checking.md#original-dimacs-sat-points). Ordinary requested checks and
 ended-case rechecks share the production registry. `checker/dimacs.json` accepts explicit frozen captures and
 retains both paths' receipts; SDK success alone is insufficient. SAT point acceptance supplies no independent
 UNSAT or optimum proof. Resource and unavailable checks remain unchecked.
