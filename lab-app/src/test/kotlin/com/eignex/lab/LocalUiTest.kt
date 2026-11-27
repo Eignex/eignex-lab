@@ -39,10 +39,8 @@ class LocalUiTest {
             assertContains(benchPage, "id=\"job-details\"")
             assertContains(client.get("/jobs/${bench.id}/files/cases/0/out/report/solve-record.json").bodyAsText(), "Synthetic local preview artifact")
             val trend = client.get("/trend?name=preview-sweep").bodyAsText()
-            assertTrue(Json.parseToJsonElement(trend).toString().contains("preview"))
-            assertFalse(trend == "[]", "regression history is precomputed at startup")
             val runs = Json.decodeFromString<List<TrendRun>>(trend)
-            assertEquals(10, runs.size)
+            assertEquals(10, runs.size, "regression history is precomputed at startup")
             for (run in runs) {
                 assertEquals(96, run.problems)
                 assertEquals(12, run.themes.size)
