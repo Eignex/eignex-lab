@@ -290,6 +290,15 @@ test('table timings keep five significant digits below one hundredth', () => {
   assert.match(rows, /Historical target 0\.00012345 ns\/op/);
 });
 
+test('a change that rounds to zero is shown without a minus sign', () => {
+  const before = run(1), after = run(2, [[9.9999, 1000000], [10, 1000000]]);
+
+  const rows = renderCharts([before, after], false).get('benchmark-case-rows').textContent;
+
+  assert.doesNotMatch(rows, /-0\.0%/);
+  assert.match(rows, /9\.9999 ns\/op.*\+0\.0% vs own history/);
+});
+
 test('a future SIMD capture cannot change which workloads qualify an earlier baseline', () => {
   const before = threeEngines(1, 10, 100, 1000), after = threeEngines(2, 12, 100, 1000);
   before.benchmark.workloads.push({caseId: 'new-simd', theme: 'dot', status: 'failed', engines: {'jvm-scalar': 'failed'}});

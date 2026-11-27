@@ -7,7 +7,11 @@
   const priority = ['jvm-default', 'jvm-scalar', 'jvm-simd', 'native', 'native-default'];
   const format = value => value.toLocaleString(undefined, {maximumSignificantDigits: 5});
   const name = value => labels[value] || value;
-  const signed = value => (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
+  // A change smaller than the shown precision reads +0.0%, never -0.0%.
+  const signed = value => {
+    const shown = Math.abs(value).toFixed(1);
+    return (value < 0 && Number(shown) ? '-' : '+') + shown + '%';
+  };
   const relative = value => value.toFixed(2) + '×';
   window.renderBenchmarkTrend = function (context) {
     const {all, runs, draw, niceMax, when} = context, H = window.BenchmarkHistory;
