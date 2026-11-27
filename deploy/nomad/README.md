@@ -1,9 +1,8 @@
 # Nomad execution
 
-Production uses Nomad for ordinary submissions, schedules and confirmations, with native Mac execution and Linux
-Spot workers. See [the migration status](../history/NOMAD-MIGRATION.md) for verified canaries and outstanding removal gates.
-The sandbox commands below create an isolated cluster; managed services and automatic admission are documented
-later in this runbook.
+Nomad is the only experiment executor: ordinary submissions, schedules and confirmations run as Nomad batch jobs on
+the native Mac client and on Linux Spot workers; analysis and rechecks stay in the local maintenance runner. The
+sandbox commands below create an isolated test cluster; managed services and automatic admission follow later.
 
 The coordinator refreshes capacity independently every five seconds, so source checks and worker reconciliation
 cannot delay the 30-second freshness gate. Node details are cached by Nomad's `ModifyIndex`; node changes invalidate
