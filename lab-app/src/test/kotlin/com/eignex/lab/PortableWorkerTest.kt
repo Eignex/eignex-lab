@@ -1273,13 +1273,12 @@ class PortableWorkerTest {
 
     // 500 detached-child cases, 25 in each of 20 fresh supervisors: the kill after a lost connection repeats as often
     // as with one supervisor per case, and an immediate connection still races each start, without 500 JVM starts.
-    @Test fun `zz repeat`() {
-        repeat(20) { start ->
+    @Test fun `independent supervisor kills detached children after client connection closes`() {
+        repeat(20) {
             Files.deleteIfExists(root.resolve("supervisor.sock"))
-            service { socket -> repeat(25) { println("ITER ${start * 25 + it}"); Files.deleteIfExists(root.resolve("escaped.pid")); detachedChildDies(socket) } }
+            service { socket -> repeat(25) { Files.deleteIfExists(root.resolve("escaped.pid")); detachedChildDies(socket) } }
         }
     }
-    @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { detachedChildDies(it) }
     private fun detachedChildDies(socket: Path) {
         val pid = root.resolve("escaped.pid")
         // A child in a session of its own, as a detaching solver starts one; the pid file is written once it exists.
