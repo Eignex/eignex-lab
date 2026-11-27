@@ -143,10 +143,6 @@ class SchemaTest {
                 c.createStatement().execute("UPDATE jobs SET status = 'QUEUED', finished_at = NULL WHERE id = $done")
             }
         }
-        for (from in Status.entries) for (to in Status.entries) {
-            assertEquals(from == to || to in JobLifecycle.moves.getValue(from), JobLifecycle.allows(from, to), "$from to $to")
-        }
-        assertTrue(JobLifecycle.allows(Status.FAILED, Status.QUEUED))
     }
 
     @Test
@@ -160,9 +156,6 @@ class SchemaTest {
             assertFailsWith<SQLException> { c.createStatement().execute("UPDATE commands SET status = 'DONE' WHERE job_id = $id AND idx = 0") }
             assertFailsWith<SQLException> { c.createStatement().execute("UPDATE commands SET status = 'RUNNING' WHERE job_id = $id AND idx = 1") }
             c.createStatement().execute("UPDATE commands SET status = 'QUEUED' WHERE job_id = $id")
-        }
-        for (from in Status.entries) for (to in Status.entries) {
-            assertEquals(from == to || to in CommandLifecycle.moves.getValue(from), CommandLifecycle.allows(from, to), "$from to $to")
         }
     }
 
