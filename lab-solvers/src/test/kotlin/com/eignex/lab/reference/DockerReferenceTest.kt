@@ -1,7 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.domain.*
-
 import org.junit.jupiter.api.Timeout
 import kotlin.test.Test
 import kotlin.test.assertEquals

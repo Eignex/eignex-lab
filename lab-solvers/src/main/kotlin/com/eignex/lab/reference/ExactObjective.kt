@@ -1,8 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.MathContext

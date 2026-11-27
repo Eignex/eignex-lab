@@ -1,8 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-
 /** Which reference solver takes an instance, and running it. */
 object ReferenceSolve {
     /** A reference solve: the solver that ran, its result, and the model's objective sense. */

@@ -1,7 +1,5 @@
 package com.eignex.lab.checker
 
-import com.eignex.lab.domain.*
-
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test

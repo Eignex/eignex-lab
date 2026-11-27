@@ -1,7 +1,6 @@
 package com.eignex.lab.reference
 
 import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
 
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject

@@ -1,8 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-
 import java.io.File
 import java.nio.file.Files
 

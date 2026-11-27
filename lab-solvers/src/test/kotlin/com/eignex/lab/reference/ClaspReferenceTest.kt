@@ -1,7 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.domain.*
-
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
