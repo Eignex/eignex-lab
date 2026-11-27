@@ -1,9 +1,7 @@
 package com.eignex.lab.checker
 
-import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*
 
-import com.eignex.lab.reference.CorpusFiles
 import org.xcsp.parser.callbacks.SolutionChecker
 import java.io.ByteArrayOutputStream
 import java.io.File

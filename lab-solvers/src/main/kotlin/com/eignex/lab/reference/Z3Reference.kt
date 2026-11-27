@@ -1,11 +1,7 @@
 package com.eignex.lab.reference
 
 import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
 
-import com.eignex.lab.checker.ToolLimits
-import com.eignex.lab.checker.ToolProcess
-import com.eignex.lab.checker.ToolResourceReceipt
 import java.io.File
 import java.nio.file.Files
 import kotlinx.serialization.json.Json

@@ -1,8 +1,5 @@
 package com.eignex.lab.checker
 
-import com.eignex.lab.domain.*
-import com.eignex.lab.reference.*
-
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.Serializable

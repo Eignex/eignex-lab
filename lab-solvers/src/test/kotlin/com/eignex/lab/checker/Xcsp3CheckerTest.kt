@@ -2,7 +2,6 @@ package com.eignex.lab.checker
 
 import com.eignex.lab.domain.*
 
-import com.eignex.lab.domain.Problem
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject

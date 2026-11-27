@@ -1,8 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-
 /** The last complete solution a reference solver printed, kept in its record so the verdict can be checked again. */
 object Witness {
     private val ASSIGNMENT = Regex("^\\s*[A-Za-z_][A-Za-z_0-9]*\\s*=")

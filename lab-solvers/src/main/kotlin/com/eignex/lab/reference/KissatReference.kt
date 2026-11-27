@@ -1,9 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-
-
 /**
  * Single-threaded native kissat reference. Streams CNF using [ClaspReference.ClaspInput]
  * and reads SAT/UNSAT/UNKNOWN status lines. Rows use solver key `kissat`.

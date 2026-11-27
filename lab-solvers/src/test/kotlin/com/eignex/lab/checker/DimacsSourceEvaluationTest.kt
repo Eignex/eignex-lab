@@ -1,7 +1,5 @@
 package com.eignex.lab.checker
 
-import com.eignex.lab.domain.*
-
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test

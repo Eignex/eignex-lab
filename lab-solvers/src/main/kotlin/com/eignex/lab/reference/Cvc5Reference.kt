@@ -1,9 +1,5 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-
-
 /**
  * SMT-LIB reference adapter for native cvc5, with `--tlimit` and [Z3Reference.parse].
  * Rows use solver key `cvc5`.

@@ -1,9 +1,7 @@
 package com.eignex.lab.checker
 
-import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*
 
-import com.eignex.lab.reference.CorpusFiles
 import java.io.File
 
 /**
