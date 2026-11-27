@@ -99,7 +99,7 @@ owned="$owned|LAB_EXECUTION_BACKEND"
 [[ "$docker_mode" == system ]] && owned="$owned|LAB_REQUIRE_DOCKER"
 settings() {
   # grep exits 1 on a lab.env with nothing set, which pipefail would turn into a silent exit.
-  { grep -v '^\s*#' "$envfile" | grep '=' | grep -vE "^($owned)=" || true; } |
+  { grep -v '^[[:space:]]*#' "$envfile" | grep '=' | grep -vE "^($owned)=" || true; } |
     while IFS='=' read -r key value; do value="${value%\"}"; value="${value#\"}"; echo "$key=$value"; done
   for entry in ${service_env[@]+"${service_env[@]}"}; do echo "$entry"; done
 }

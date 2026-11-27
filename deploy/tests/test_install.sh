@@ -28,7 +28,8 @@ install() {
   for name in install.sh release.sh launchd.sh lab.env.example host-maintenance.sh public-address.sh; do
     cp -p "$deploy/$name" "$project/deploy/$name"
   done
-  printf 'LAB_DOCKER=none\n' > "$home/.config/eignex-lab/lab.env"
+  # An indented comment with a setting in it stays a comment.
+  printf 'LAB_DOCKER=none\n\t  # LAB_COMMENTED=1\n' > "$home/.config/eignex-lab/lab.env"
   if [[ "$1" == yes ]]; then printf 'LAB_DATA="%s"\n' "$root/custom-data" >> "$home/.config/eignex-lab/lab.env"; fi
   printf '#!/bin/bash\nif [[ "$*" == *printJavaHome* ]]; then echo /test-jdk; else [[ "$*" == *"clean installDist"* ]] || exit 1; fi\n' \
     > "$project/gradlew"
@@ -58,6 +59,7 @@ install() {
       check "$role command" grep -qF "ExecStart=$launcher $role" "$unit"
     fi
   done
+  check "comments stay out of the services" test -z "$(grep -rl LAB_COMMENTED "$units")"
   if [[ "$(uname -s)" == Darwin ]]; then
     plist="$(plist_json "$units/com.eignex.lab.gradle-maintenance.plist")"
     equal 300 "$(jq .StartInterval <<< "$plist")" "maintenance interval"
