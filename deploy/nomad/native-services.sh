@@ -191,12 +191,7 @@ install_runtime() {
   # shellcheck disable=SC2174 # only the state directory itself is private
   { mkdir -p -m 700 "$state" && chmod 700 "$state"; } || fail "cannot create $state"
   state="$(cd "$state" && pwd -P)"
-  version="$(hashicorp_pin nomad.version)" || exit 1
-  case "$(uname -m)" in
-  arm64) platform=darwin_arm64 ;;
-  x86_64) platform=darwin_amd64 ;;
-  *) fail "no native Nomad build for $(uname -m)" ;;
-  esac
+  version="$(hashicorp_pin nomad.version)" && platform="$(hashicorp_platform)" || exit 1
   binary="$state/bin/nomad-$version"
   [[ -d "$state/bin" ]] || mkdir "$state/bin" || fail "cannot create $state/bin"
   download="$(mktemp "$state/bin/.nomad-XXXXXX")" || fail "cannot create a download in $state/bin"
