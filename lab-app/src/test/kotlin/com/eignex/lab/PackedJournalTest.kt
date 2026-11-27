@@ -23,7 +23,7 @@ class PackedJournalTest {
     private val root = Files.createTempDirectory("packed-journal")
     private val external = LocalArtifactStore(root.resolve("external"))
     private val bytes = ByteArray(3 * 1024 * 1024) { (it % 251).toByte() }
-    private val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+    private val sha = sha256Hex(bytes)
     private val blobs = listOf(ResultBlob(sha, bytes.size.toLong()))
 
     @Test fun `mixed packed retries reserve and publish only new blobs within the disk cap`() {
@@ -113,7 +113,7 @@ class PackedJournalTest {
             ResultJournal(path, external, maxBytes = limit, start = false).use { journal ->
                 journal.putPacked(1, blobs, bytes.inputStream())
                 val futures = fresh.map { value -> pool.submit {
-                    val hash = java.security.MessageDigest.getInstance("SHA-256").digest(value).hex()
+                    val hash = sha256Hex(value)
                     val input = object : ByteArrayInputStream(bytes + value) {
                         private var waiting = true
                         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -133,7 +133,7 @@ class PackedJournalTest {
                 assertEquals(2, recovered.status().batches); assertTrue(recovered.status().bytes < 64 * 1024)
                 assertTrue(recovered.drainGroup()); assertEquals(8192, recovered.status().bytes)
                 for (value in fresh + listOf(bytes)) {
-                    val hash = java.security.MessageDigest.getInstance("SHA-256").digest(value).hex()
+                    val hash = sha256Hex(value)
                     assertContentEquals(value, external.open(1, hash).use { it.readAllBytes() })
                 }
             }
@@ -142,7 +142,7 @@ class PackedJournalTest {
 
     @Test fun `a near maximum capture reserves ZIP framing without exceeding the disk cap`() {
         val large = ByteArray(PACKED_BYTES - 1024)
-        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(large).hex()
+        val hash = sha256Hex(large)
         ResultJournal(root.resolve("maximum"), external, start = false).use { journal ->
             journal.putPacked(1, listOf(ResultBlob(hash, large.size.toLong())), large.inputStream())
             assertEquals(large.size.toLong(), journal.offset(1, hash))
@@ -406,7 +406,7 @@ class PackedJournalTest {
         }
     }
 
-    private fun digest(value: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(value).hex()
+    private fun digest(value: ByteArray) = sha256Hex(value)
     private fun smallMembers(count: Int = 128): Map<String, ByteArray> = (0 until count).map { n ->
         ByteArray(16384) { ((it + n) % 251).toByte() }
     }.associateBy(::digest)

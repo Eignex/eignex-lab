@@ -5,12 +5,11 @@ import com.eignex.lab.worker.*
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import kotlin.test.*
 
 class GradleDistributionSeedTest {
     private val bytes = "verified distribution fixture".toByteArray()
-    private val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+    private val sha = sha256Hex(bytes)
     private val name = "gradle-9.7.1-bin.zip"
     private val metadata = """{"assets":[{"name":"$name","id":123,"size":${bytes.size},"digest":"sha256:$sha"}]}"""
     private fun wrapper(root: Path) {

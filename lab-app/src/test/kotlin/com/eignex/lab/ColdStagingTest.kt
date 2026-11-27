@@ -131,7 +131,7 @@ class ColdStagingTest {
                 zip.putNextEntry(ZipEntry("code")); zip.write(payload.toByteArray()); zip.closeEntry()
             } }.toByteArray()
             val manifest = WorkerBundle("b".repeat(64), listOf(InputFile("code", ExecutionStore.digest(payload), payload.length.toLong())), "Eignex/example", "a".repeat(40), "linux", "amd64", "fixture")
-                .copy(sha256 = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex())
+                .copy(sha256 = sha256Hex(bytes))
             val cacheRoot = root.resolve("cache"); val cache = VerifiedCache(cacheRoot)
             val tree = cache.stage(manifest) { ByteArrayInputStream(bytes) }
             assertEquals(payload, Files.readString(tree.resolve("code")))

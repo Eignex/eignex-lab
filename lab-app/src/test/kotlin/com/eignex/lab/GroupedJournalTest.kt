@@ -1,11 +1,10 @@
 package com.eignex.lab
 
 import com.eignex.lab.store.*
-import com.eignex.lab.util.hex
+import com.eignex.lab.util.sha256Hex
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit.SECONDS
@@ -163,12 +162,12 @@ class GroupedJournalTest {
         ResultJournal(path, destination { barriers++ }, start = false).use { store ->
             repeat(9) { n ->
                 val bytes = ByteArray(512 * 1024) { ((it + n) % 251).toByte() }
-                store.putAll(1, mapOf(MessageDigest.getInstance("SHA-256").digest(bytes).hex() to bytes))
+                store.putAll(1, mapOf(sha256Hex(bytes) to bytes))
             }
             assertTrue(store.drainGroup()); assertEquals(1, store.status().batches); assertEquals(1, barriers)
             assertTrue(store.drainGroup()); assertEquals(0, store.status().batches)
             val bytes = ByteArray(5 * 1024 * 1024) { (it % 251).toByte() }
-            val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+            val sha = sha256Hex(bytes)
             store.putPacked(2, listOf(ResultBlob(sha, bytes.size.toLong())), bytes.inputStream())
             store.putAll(2, blobs("small"))
             assertTrue(store.drainGroup()); assertEquals(1, store.status().batches)
@@ -320,7 +319,7 @@ class GroupedJournalTest {
 
     @Test fun `verified external bytes can drain without rereading an unavailable journal payload`() {
         val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
-        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val sha = sha256Hex(bytes)
         external.put(1, sha, bytes.size.toLong(), 0, bytes.inputStream())
         var barriers = 0; var charged = 0L
         lateinit var store: ResultJournal
@@ -351,7 +350,7 @@ class GroupedJournalTest {
 
     @Test fun `complete offsets still verify corrupt external bytes and retain the journal on failure`() {
         val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
-        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val sha = sha256Hex(bytes)
         external.put(1, sha, bytes.size.toLong(), 0, bytes.inputStream())
         Files.write(root.resolve("external/1/$sha"), ByteArray(bytes.size) { 42 })
         var barriers = 0
@@ -367,7 +366,7 @@ class GroupedJournalTest {
 
     @Test fun `complete partial uploads are verified and published before the journal charge is released`() {
         val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
-        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val sha = sha256Hex(bytes)
         val directory = Files.createDirectories(root.resolve("external/1"))
         Files.write(directory.resolve("$sha.partial"), bytes)
         var barriers = 0

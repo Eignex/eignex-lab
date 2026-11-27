@@ -8,7 +8,6 @@ import com.eignex.lab.nomad.*
 
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import kotlin.test.*
 
 class RegionalBuildArchivesTest {
@@ -20,13 +19,12 @@ class RegionalBuildArchivesTest {
         override fun get(sha: String, destination: Path) { gets += sha; Files.write(destination, objects.getValue(sha)) }
     }
 
-    private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
 
     @Test fun `the coordinator checks a regional build archive without fetching it and fetches once to read it`() {
         val root = Files.createTempDirectory("regional-artifacts")
         try {
             val archives = Archives()
-            val bytes = "built workspace".toByteArray(); val sha = sha(bytes)
+            val bytes = "built workspace".toByteArray(); val sha = sha256Hex(bytes)
             archives.objects[sha] = bytes
             val local = LocalArtifactStore(root.resolve("artifacts"))
             ResultJournal(root.resolve("journal"), RegionalArtifactStore(local, archives, root.resolve("fetches")), start = false).use { store ->
@@ -38,7 +36,7 @@ class RegionalBuildArchivesTest {
                 assertContentEquals(bytes, store.open(7, sha).use { it.readBytes() })
                 assertEquals(listOf(sha), archives.gets)
                 assertFalse(store.regional(7, sha))
-                val missing = sha("absent".toByteArray())
+                val missing = sha256Hex("absent".toByteArray())
                 assertFailsWith<IllegalStateException> { store.verify(7, missing) }
                 assertFalse(store.regional(7, missing))
             }
@@ -49,7 +47,7 @@ class RegionalBuildArchivesTest {
         val root = Files.createTempDirectory("regional-corrupt")
         try {
             val archives = Archives()
-            val sha = sha("expected".toByteArray())
+            val sha = sha256Hex("expected".toByteArray())
             archives.objects[sha] = "tampered".toByteArray()
             val store = RegionalArtifactStore(LocalArtifactStore(root.resolve("artifacts")), archives, root.resolve("fetches"))
             assertFails { store.open(3, sha).use { it.readBytes() } }
@@ -72,7 +70,7 @@ class RegionalBuildArchivesTest {
 
     @Test fun `checks of a regional build stage the same files from the local source archive`() {
         val commit = "a".repeat(40)
-        fun file(path: String, text: String) = InputFile(path, sha(text.toByteArray()), text.length.toLong())
+        fun file(path: String, text: String) = InputFile(path, sha256Hex(text.toByteArray()), text.length.toLong())
         fun bundle(sha: Char, vararg files: InputFile) = WorkerBundle(sha.toString().repeat(64), files.toList(), "Eignex/klause", commit, "linux", "amd64", "jdk25")
         val checked: (String) -> Boolean = { it.startsWith("models/") }
         val built = bundle('b', file("models/m.mzn", "model"), file("build/app.jar", "jar"))

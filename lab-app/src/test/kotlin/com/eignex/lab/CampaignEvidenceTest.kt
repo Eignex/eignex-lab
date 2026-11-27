@@ -14,7 +14,6 @@ import com.eignex.lab.cli.*
 import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import kotlin.io.path.readBytes
@@ -174,7 +173,7 @@ class CampaignEvidenceTest {
         val data = Json.parseToJsonElement(manifest.readText()).jsonObject.toMutableMap()
         val identity = data.getValue("archive").jsonObject.toMutableMap()
         identity["size"] = JsonPrimitive(Files.size(archive))
-        identity["sha256"] = JsonPrimitive(MessageDigest.getInstance("SHA-256").digest(archive.readBytes()).joinToString("") { "%02x".format(it) })
+        identity["sha256"] = JsonPrimitive(sha256Hex(archive.readBytes()))
         data["archive"] = JsonObject(identity)
         manifest.writeText(JsonObject(data).toString())
     }

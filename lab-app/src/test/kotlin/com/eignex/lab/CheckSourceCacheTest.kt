@@ -9,7 +9,6 @@ import com.eignex.lab.execution.*
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
-import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.test.*
@@ -21,7 +20,7 @@ class CheckSourceCacheTest {
         val bytes = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
             files.forEach { (name, text) -> zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray()); zip.closeEntry() }
         } }.toByteArray()
-        return WorkerBundle(MessageDigest.getInstance("SHA-256").digest(bytes).hex(), files.map { (name, text) ->
+        return WorkerBundle(sha256Hex(bytes), files.map { (name, text) ->
             InputFile(name, ExecutionStore.digest(text), text.toByteArray().size.toLong())
         }, Repositories.DEFAULT, commit.toString().repeat(40), "linux", "amd64", "fixture") to bytes
     }

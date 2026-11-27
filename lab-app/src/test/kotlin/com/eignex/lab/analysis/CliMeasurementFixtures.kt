@@ -1,7 +1,7 @@
 package com.eignex.lab.analysis
 
+import com.eignex.lab.util.sha256Hex
 import java.nio.file.Path
-import java.security.MessageDigest
 import kotlinx.serialization.json.Json
 
 /** A measured case's manifest as archived captures carry it, for the report and archive tests. */
@@ -23,7 +23,7 @@ internal object CliMeasurementFixtures {
     ) {
         val recordHash = record?.takeIf { it.isNotEmpty() }?.let { snapshot ->
             files.resolve("solve-record.json").toFile().writeText(snapshot)
-            MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
+            sha256Hex(snapshot.toByteArray())
         }
         files.resolve(CliMeasurements.MANIFEST).toFile().writeText(Json { encodeDefaults = true }.encodeToString(
             CliMeasurementManifest.serializer(),

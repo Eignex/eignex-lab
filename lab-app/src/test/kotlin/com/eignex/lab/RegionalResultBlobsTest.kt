@@ -26,24 +26,23 @@ class RegionalResultBlobsTest {
         override fun get(sha: String, destination: Path) { gets += sha; Files.write(destination, objects.getValue(sha)) }
     }
 
-    private fun sha(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
 
     @Test fun `the coordinator reads a regional result only when it first opens it and checks its hash`() {
         val root = Files.createTempDirectory("regional-results")
         try {
             val results = Blobs()
-            val bytes = "recorded flight".toByteArray(); val sha = sha(bytes)
+            val bytes = "recorded flight".toByteArray(); val sha = sha256Hex(bytes)
             results.objects[sha] = bytes
             val local = LocalArtifactStore(root.resolve("artifacts"))
             ResultJournal(root.resolve("journal"), RegionalArtifactStore(local, Blobs(), root.resolve("fetches"), results), start = false).use { store ->
                 assertEquals(bytes.size.toLong(), store.regionalResult(sha))
-                assertNull(store.regionalResult(sha("expired".toByteArray())))
+                assertNull(store.regionalResult(sha256Hex("expired".toByteArray())))
                 assertEquals(emptyList(), results.gets)
                 assertContentEquals(bytes, store.open(7, sha).use { it.readBytes() })
                 assertContentEquals(bytes, store.open(7, sha).use { it.readBytes() })
                 assertEquals(listOf(sha), results.gets)
             }
-            val corrupt = sha("expected".toByteArray())
+            val corrupt = sha256Hex("expected".toByteArray())
             results.objects[corrupt] = "tampered".toByteArray()
             val store = RegionalArtifactStore(LocalArtifactStore(root.resolve("other")), Blobs(), root.resolve("fetches"), results)
             assertFails { store.open(3, corrupt).use { it.readBytes() } }
@@ -82,8 +81,8 @@ class RegionalResultBlobsTest {
             val store = Store(config.database)
             val job = store.create("regional", "main", emptyList(), experiment = ExperimentSpec("regional"))
             val results = Blobs()
-            val kept = "a large capture".toByteArray(); val keptSha = sha(kept)
-            val expired = "an expired capture".toByteArray(); val expiredSha = sha(expired)
+            val kept = "a large capture".toByteArray(); val keptSha = sha256Hex(kept)
+            val expired = "an expired capture".toByteArray(); val expiredSha = sha256Hex(expired)
             results.objects[keptSha] = kept
             val names = mapOf("cases/0/profile-x/cli.jfr" to keptSha, "cases/0/profile-x/hotspot-compilation.log.gz" to expiredSha)
             val token = ExecutionStore.token()

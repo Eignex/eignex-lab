@@ -108,7 +108,7 @@ class WorkerTransferTest {
                 counts += body.blobs.size
                 for (blob in body.blobs) {
                     val bytes = exchange.requestBody.readNBytes(blob.bytes.toInt())
-                    assertEquals(blob.sha, java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex())
+                    assertEquals(blob.sha, sha256Hex(bytes))
                     uploaded[blob.sha] = bytes
                 }
                 assertEquals(-1, exchange.requestBody.read())
@@ -232,7 +232,7 @@ class WorkerTransferTest {
     @Test fun `cold input streams retry only the failed range and retain no download file`() {
         val root = Files.createTempDirectory("worker-input-stream")
         val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
-        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val hash = sha256Hex(bytes)
         val offsets = mutableListOf<Int>(); var failed = false
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/worker/v1/sessions/session/inputs/$hash") { exchange ->
@@ -296,7 +296,7 @@ class WorkerTransferTest {
                 val body = Json.decodeFromString<WorkerInlineCommit>(String(exchange.requestBody.readAllBytes()))
                 assertEquals(2, body.blobs.size)
                 assertEquals(setOf("0.out", "0.err", "0.exit"), body.result.artifacts.keys)
-                for ((hash, bytes) in body.decoded()) assertEquals(hash, java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex())
+                for ((hash, bytes) in body.decoded()) assertEquals(hash, sha256Hex(bytes))
                 exchange.sendResponseHeaders(204, -1)
             } finally { exchange.close() }
         }

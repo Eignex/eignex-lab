@@ -122,10 +122,10 @@ class SharedInputsTest {
         val gets = mutableListOf<String>()
         val puts = mutableListOf<String>()
         override fun matches(key: String, file: InputFile, md5: String) = objects[key]?.let {
-            it.size.toLong() == file.bytes && java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() == file.sha256
+            it.size.toLong() == file.bytes && sha256Hex(it) == file.sha256
         } ?: false
         override fun stored(key: String, sha: String) = objects[key]?.takeIf {
-            java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() == sha
+            sha256Hex(it) == sha
         }?.size?.toLong()
         override fun put(key: String, source: Path, sha: String) { puts += key; objects[key] = Files.readAllBytes(source) }
         override fun get(key: String, destination: Path) { gets += key; Files.write(destination, objects.getValue(key)) }
