@@ -1215,21 +1215,12 @@ class NomadBackendTest {
     private val artifacts = LocalArtifactStore(root.resolve("artifacts"))
     private val pair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
     private fun b64(bytes: ByteArray) = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-    private val control = object : NomadControl {
+    private val control = object : RecordingNomad() {
         override var namespace = "default"
-        val jobs = mutableMapOf<String, JsonObject>(); val allocations = mutableMapOf<String, NomadAllocation>()
         val allocationDetails = mutableMapOf<String, NomadAllocation>()
         val allocationFailures = mutableSetOf<String>()
-        val nodeInventory = mutableMapOf<String, JsonObject>()
-        val nodeTasks = mutableMapOf<String, List<JsonObject>>()
-        override fun nodes() = nodeInventory.values.toList()
-        override fun node(id: String) = nodeInventory[id]
-        override fun nodeAllocations(id: String) = nodeTasks[id].orEmpty()
         var submissions = 0; var failAfterSubmit = false
-        override fun job(id: String) = jobs[id]
-        override fun submit(job: JsonObject) { submissions++; jobs[job.getValue("ID").jsonPrimitive.content] = job; if (failAfterSubmit) { failAfterSubmit = false; error("lost acknowledgement") } }
-        override fun stop(id: String) { jobs.remove(id) }
-        override fun allocations(job: String) = allocations.values.filter { it.job == job }
+        override fun submit(job: JsonObject) { submissions++; super.submit(job); if (failAfterSubmit) { failAfterSubmit = false; error("lost acknowledgement") } }
         override fun allocation(id: String): NomadAllocation? {
             check(id !in allocationFailures) { "allocation lookup unavailable" }
             return allocationDetails[id] ?: allocations[id]
