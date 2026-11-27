@@ -39,8 +39,6 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     /** Keeping the database small: the record compaction and VACUUM. */
     val maintenance = MaintenanceRepository(db, this, plans)
 
-    /** Present while a [vacuum] runs ([Database.vacuumMarker]). */
-
     /** The connection a read on this thread uses ([reading]), else the writer. */
     private val readConnection = ThreadLocal<Connection>()
     private val connection: Connection get() = readConnection.get() ?: db.writer
@@ -204,9 +202,9 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         id
     }?.let(::job)
 
-    private fun markRunning(id: Long, at: Long, interruptedRun: Long = 0) = update(
-        "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ?, run_ms = run_ms + ? WHERE id = ?",
-        Status.RUNNING.name, at, at, interruptedRun, id,
+    private fun markRunning(id: Long, at: Long) = update(
+        "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ? WHERE id = ?",
+        Status.RUNNING.name, at, at, id,
     )
 
     /** Whether the local machine is running a job. */
@@ -375,18 +373,10 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 /** A finished command that recorded when it started and ended, in SQL. */
 private const val TIMED = "(status IN ('DONE', 'FAILED') AND started_at IS NOT NULL AND finished_at IS NOT NULL)"
 
-/** A job's series in SQL, for the job in [next]'s outer query and the runs [next] looks back over: its name before
- *  any `@`, so every run a schedule queues shares its schedule's name. */
-private const val SERIES_J = "jobs.series"
-private const val SERIES_R = "r.series"
-
-/** How queued jobs of equal priority are ordered: the series that last finished a run longest ago first, then age. */
-private const val SERIES_ORDER = "(SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
-    "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
-
-/** How queues are ordered, the local machine's ([Store.queueOrder]), a node's ([Store.nodeQueue]) and the one the pages
- *  show ([Store.queue]) alike: by priority, series and age, whatever each job's placement. */
-private const val QUEUE_ORDER = "ORDER BY priority DESC, $SERIES_ORDER"
+/** How [Store.queue] orders queued jobs: by priority, then the series ([JobOrigin.series]) that last finished a run
+ *  longest ago first, then age. */
+private const val QUEUE_ORDER = "ORDER BY priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
+    "AND r.status = 'DONE' AND r.series = jobs.series), id"
 
 /**
  * Where case `m` ran, as [CaseResult.host] reads it: its recorded host, else, for a case that started before the lab
