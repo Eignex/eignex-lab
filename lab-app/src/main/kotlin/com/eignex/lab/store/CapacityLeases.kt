@@ -3,7 +3,6 @@ package com.eignex.lab.store
 import com.eignex.lab.domain.*
 import com.eignex.lab.util.*
 
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 
 /** Capacity an operator asked for by hand ([ManualCapacityLease]), kept until it expires or is released. */
