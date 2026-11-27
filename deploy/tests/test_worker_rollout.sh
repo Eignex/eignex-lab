@@ -12,9 +12,8 @@ NEW=2222222222222222222222222222222222222222
 AMD=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ARM=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
-equal() {  # equal <expected> <actual> <description>
-  [[ "$1" == "$2" ]] || { printf '  failed: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2" >&2; exit 1; }
-}
+# shellcheck source=/dev/null # the shared test harness, checked on its own
+. "$deploy/tests/harness.sh"
 
 # setup [published tags...]: a lab data directory on release OLD with releases/current at NEW, and curl answering for
 # the given tags (others 404); pkill records its calls in $root/pkill.
@@ -117,11 +116,4 @@ test_running_rollout_is_not_entered() {
   equal "$OLD" "$(jq -r .release "$data/nomad/queue.json")" "queue unchanged"
 }
 
-failures=0
-tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
-for test in $tests; do
-  ( set +e; trap '[[ -z "${root:-}" ]] || rm -rf "$root"' EXIT; "$test" )
-  status=$?
-  if (( status == 0 )); then echo "ok $test"; else echo "FAILED $test"; failures=$((failures + 1)); fi
-done
-(( failures == 0 )) || { echo "$failures failed"; exit 1; }
+run_tests "$@"

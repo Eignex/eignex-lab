@@ -6,14 +6,8 @@
 set -uo pipefail
 deploy="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-check() {  # check <description> <command...>
-  local description="$1"
-  shift
-  "$@" || { echo "  failed: $description" >&2; exit 1; }
-}
-equal() {  # equal <expected> <actual> <description>
-  [[ "$1" == "$2" ]] || { printf '  failed: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2" >&2; exit 1; }
-}
+# shellcheck source=/dev/null # the shared test harness, checked on its own
+. "$deploy/tests/harness.sh"
 setup() {
   root="$(mktemp -d)"
   root="$(cd "$root" && pwd -P)"
@@ -108,11 +102,4 @@ test_restart_without_running_services_succeeds_on_the_mac() {
     { echo "  failed: restart_services with nothing running" >&2; exit 1; }
 }
 
-failures=0
-tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
-for test in $tests; do
-  ( set +e; trap '[[ -z "${root:-}" ]] || rm -rf "$root"' EXIT; "$test" )
-  status=$?
-  if (( status == 0 )); then echo "ok $test"; else echo "FAILED $test"; failures=$((failures + 1)); fi
-done
-(( failures == 0 )) || { echo "$failures failed"; exit 1; }
+run_tests "$@"

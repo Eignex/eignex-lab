@@ -7,14 +7,8 @@ dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$dir/sandbox.sh"
 set -u
 
-check() {  # check <description> <command...>
-  local description="$1"
-  shift
-  "$@" || { echo "  failed: $description" >&2; exit 1; }
-}
-equal() {  # equal <expected> <actual> <description>
-  [[ "$1" == "$2" ]] || { printf '  failed: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2" >&2; exit 1; }
-}
+# shellcheck source=/dev/null # the shared test harness, checked on its own
+. "$dir/../tests/harness.sh"
 setup() {
   work="$(mktemp -d)"
   work="$(cd "$work" && pwd -P)"
@@ -153,11 +147,6 @@ test_probe_reports_its_detached_children() {
   check "measured wall time" jq -e '.wallSeconds >= 1 and .cpuSeconds > 0' "$work/report" > /dev/null
 }
 
-failures=0
-tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
-for test in $tests; do
-  ( set +e; trap '[[ -z "${work:-}" ]] || rm -rf "$work"' EXIT; "$test" )
-  status=$?
-  if (( status == 0 )); then echo "ok $test"; else echo "FAILED $test"; failures=$((failures + 1)); fi
-done
-(( failures == 0 )) || { echo "$failures failed"; exit 1; }
+# sandbox.sh sets root to the repository: the tests keep their scratch directory in work.
+test_scratch=work
+run_tests "$@"

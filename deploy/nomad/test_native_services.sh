@@ -8,14 +8,8 @@ script="$nomad/native-services.sh"
 . "$nomad/../launchd.sh"
 . "$nomad/hashicorp.sh"
 
-check() {  # check <description> <command...>
-  local description="$1"
-  shift
-  "$@" || { echo "  failed: $description" >&2; exit 1; }
-}
-equal() {  # equal <expected> <actual> <description>
-  [[ "$1" == "$2" ]] || { printf '  failed: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2" >&2; exit 1; }
-}
+# shellcheck source=/dev/null # the shared test harness, checked on its own
+. "$nomad/../tests/harness.sh"
 # plist_strings <plist> <key>: the strings under a top-level key, one per line.
 plist_strings() {
   awk -v key="<key>$2</key>" '$0 == "\t" key { inside = 1; next }
@@ -355,11 +349,4 @@ test_downloads_are_verified_against_the_pins() {
   check "writes nothing" test ! -e "$root/other"
 }
 
-failures=0
-tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
-for test in $tests; do
-  ( set +e; trap '[[ -z "${root:-}" ]] || rm -rf "$root"' EXIT; "$test" )
-  status=$?
-  if (( status == 0 )); then echo "ok $test"; else echo "FAILED $test"; failures=$((failures + 1)); fi
-done
-(( failures == 0 )) || { echo "$failures failed"; exit 1; }
+run_tests "$@"
