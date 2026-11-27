@@ -43,15 +43,14 @@ class WorkerLogs(private val store: Store, private val directory: (Long) -> Path
             java.io.RandomAccessFile(file.toFile(), "rw").use { output ->
                 val length = output.length()
                 require(offset <= length) { "log offset gap" }
-                if (offset < length) {
-                    val count = minOf(bytes.size.toLong(), maxBytes - offset).toInt()
-                    require(offset + count <= length) { "log chunk overlaps a different append" }
-                    output.seek(offset); val prior = ByteArray(count); output.readFully(prior)
-                    require(prior.contentEquals(bytes.copyOf(count))) { "log retry differs" }
-                    return length
+                // A retry whose reply was lost resends what is stored, and possibly more the worker's file gained since.
+                val stored = minOf(bytes.size.toLong(), length - offset).toInt()
+                if (stored > 0) {
+                    output.seek(offset); val prior = ByteArray(stored); output.readFully(prior)
+                    require(prior.contentEquals(bytes.copyOf(stored))) { "log retry differs" }
                 }
-                val accepted = minOf(bytes.size.toLong(), maxBytes - length).toInt()
-                output.seek(length); output.write(bytes, 0, accepted)
+                val accepted = minOf(bytes.size.toLong() - stored, maxBytes - length).toInt()
+                output.seek(length); output.write(bytes, stored, accepted)
                 return length + accepted
             }
         } }
