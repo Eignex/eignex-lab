@@ -281,6 +281,15 @@ test('default-only captures leave SIMD charts unavailable while preserving their
   assert.match(get('benchmark-case-rows').textContent, /10 ns\/op/);
 });
 
+test('table timings keep five significant digits below one hundredth', () => {
+  const before = run(1, [[0.00012345, 1000000], [10, 1000000]]), after = run(2, [[0.00012344, 1000000], [10, 1000000]]);
+
+  const rows = renderCharts([before, after], false).get('benchmark-case-rows').textContent;
+
+  assert.match(rows, /0\.00012344 ns\/op/);
+  assert.match(rows, /Historical target 0\.00012345 ns\/op/);
+});
+
 test('a future SIMD capture cannot change which workloads qualify an earlier baseline', () => {
   const before = threeEngines(1, 10, 100, 1000), after = threeEngines(2, 12, 100, 1000);
   before.benchmark.workloads.push({caseId: 'new-simd', theme: 'dot', status: 'failed', engines: {'jvm-scalar': 'failed'}});

@@ -5,7 +5,7 @@
   const labels = {'jvm-scalar': 'Portable JVM', 'jvm-simd': 'JVM SIMD', native: 'Native portable',
     'native-default': 'Native default', 'jvm-default': 'JVM default'};
   const priority = ['jvm-default', 'jvm-scalar', 'jvm-simd', 'native', 'native-default'];
-  const format = value => Number(value.toPrecision(5)).toLocaleString();
+  const format = value => value.toLocaleString(undefined, {maximumSignificantDigits: 5});
   const name = value => labels[value] || value;
   const signed = value => (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
   const relative = value => value.toFixed(2) + '×';
