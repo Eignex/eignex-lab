@@ -177,7 +177,8 @@ internal fun nodesPage(
                                 }
                             }
                             label {
-                                htmlFor = "node-countMinimum nodes in pool"
+                                htmlFor = "node-count"
+                                text("Minimum nodes in pool")
                                 input(type = InputType.number) {
                                     id = "node-count"
                                     name = "nodes"
@@ -188,7 +189,8 @@ internal fun nodesPage(
                                 }
                             }
                             label {
-                                htmlFor = "node-durationKeep for"
+                                htmlFor = "node-duration"
+                                text("Keep for")
                                 select {
                                     id = "node-duration"
                                     name = "ttlSec"
