@@ -27,6 +27,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import kotlin.io.path.writeText
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -154,6 +155,7 @@ class SubmissionOptionsTest {
             setBody("""{"name":"bad","description":"d","bench":{"manifest":"bench.json"},"measurement":"jfr"}""")
         }
         assertEquals(HttpStatusCode.BadRequest, rejected.status)
+        assertContains(rejected.bodyAsText(), "bench jobs refuse measurement jfr")
     }
 
     @Test

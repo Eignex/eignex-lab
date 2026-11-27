@@ -212,7 +212,10 @@ object Experiments {
         require(!bench.adapterResources || spec.nodeTags?.require?.contains("platform:linux") == true) {
             "adapter resources require an explicit platform:linux tag"
         }
-        require(!spec.measuresCli)
+        require(!spec.measuresCli) {
+            "bench jobs refuse measurement ${Measurement.serializer().descriptor.getElementName(spec.measurement.ordinal)}: a bench asks for CLI measurement in bench.request.parameters.measurement; " +
+                "its job-level measurement may only be none or native-startup"
+        }
         require(spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.seeds.isEmpty()) {
             "bench owns selection and seed expansion; submit opaque parameters in bench.request"
         }
