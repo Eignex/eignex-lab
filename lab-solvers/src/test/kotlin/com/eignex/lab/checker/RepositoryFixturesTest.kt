@@ -127,6 +127,14 @@ class RepositoryFixturesTest {
     }
 
     @Test
+    fun `a compressed fixture is verified by its plain bytes`() {
+        val tree = File(work, "7407@${pinned.take(12)}/$path.zst").apply { parentFile.mkdirs() }
+        com.github.luben.zstd.ZstdOutputStream(tree.outputStream()).use { it.write(pinnedText.toByteArray()) }
+
+        assertEquals(tree, locate(problem, pinnedHash).getOrThrow().model)
+    }
+
+    @Test
     fun `corpus sources are found in the corpus as before`() {
         val corpus = Files.createTempDirectory("corpus").toFile()
         val source = File(corpus, "smt-test/QF_NRA/circle.smt2").apply { parentFile.mkdirs(); writeText(pinnedText) }
