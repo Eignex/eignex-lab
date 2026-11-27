@@ -94,11 +94,8 @@ object NomadCoordinatorCli {
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
         val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
-        val checks = CaseChecks(store, { Checkers.of(config.paths) }) { job, line ->
-            config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n")
-        }
-        val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }
-        val pendingChecks = java.util.concurrent.ConcurrentHashMap<Pair<Long, Int>, java.util.concurrent.Future<String>>()
+        val setupLog = { job: Long, line: String -> config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n") }
+        val caseChecks = CoordinatorCaseChecks(store, CaseChecks(store, { Checkers.of(config.paths) }, setupLog), setupLog, reconcileSignal::wake)
         // The pools the API placed jobs by must be the ones admission holds them to: one file, checked with the queue.
         val capacityFile = settings.capacity?.let { Path.of(it.settingsFile) }
         require(config.nomadCapacitySettings == null || capacityFile == null || config.nomadCapacitySettings == capacityFile) {
@@ -118,37 +115,7 @@ object NomadCoordinatorCli {
             pendingPlacement = spotFallback::apply,
             changed = { admissionSignal.wake(); reconcileSignal.wake() }, solveAllowed = artifacts::allowsNewSolve,
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
-            writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
-            val (problem, arm) = store.plans.caseOf(job, index) ?: error("case missing")
-            if (arm.values["backend"] != REFERENCE_BACKEND && !ValidationRequest.requested(store.job(job)?.experiment, arm.values)) return@check "not-required"
-            val key = job to index
-            if (pendingChecks.size >= 64 && !pendingChecks.containsKey(key)) return@check null
-            val future = pendingChecks.computeIfAbsent(key) {
-                val task = object : java.util.concurrent.FutureTask<String>(java.util.concurrent.Callable {
-                    if (arm.values["backend"] == REFERENCE_BACKEND) {
-                        if (problem.collection.isNotEmpty()) store.plans.caseRecordText(job, index)?.let { text ->
-                            References.of(Json.parseToJsonElement(text))?.let { reference ->
-                                store.references.put(listOf((problem.referenceKey) to reference), "lab:$job")
-                            }
-                        }
-                        "not-required"
-                    } else {
-                        checks.check(job, index, problem)?.json() ?: "unchecked: no applicable source checker"
-                    }
-                }) { override fun done() { reconcileSignal.wake() } }
-                checkPool.execute(task)
-                task
-            }
-            if (!future.isDone) null else {
-                try { future.get() }
-                catch (failure: java.util.concurrent.ExecutionException) {
-                    if (failure.cause is SharedCheckInputUnavailable) return@check null
-                    val detail = "unchecked: source checker failed (${failure.cause?.javaClass?.simpleName})"
-                    config.createJobDir(job).resolve("setup.log").toFile().appendText("case $index: $detail\n")
-                    detail
-                } finally { pendingChecks.remove(key, future) }
-            }
-        }, placementPolicy = NomadPlacementPolicy(queueSettings)::apply, workerRuntime = NomadWorkerRuntime(queueSettings)::replace, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template -> Placement.admit(cluster, manifest, template, config.cores, config.maxParallel) }, nativeNodeTags = config.localNodeTags)
+            writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = caseChecks::check, placementPolicy = NomadPlacementPolicy(queueSettings)::apply, workerRuntime = NomadWorkerRuntime(queueSettings)::replace, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template -> Placement.admit(cluster, manifest, template, config.cores, config.maxParallel) }, nativeNodeTags = config.localNodeTags)
         // Git mirror publication stays serial; it must not block admission of already prepared experiments.
         val sourceWork = CoordinatorWork<QueueSourceKey, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1, admissionSignal::wake)
         val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan", completed = admissionSignal::wake)
