@@ -15,6 +15,7 @@ import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.net.URI
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.serialization.json.Json
@@ -23,6 +24,11 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class WorkerTransferTest {
+    /** A worker of session `session` that reaches [server] and signs as [identity], kept under [root]. */
+    private fun worker(server: HttpServer, root: Path, token: String = "token", identity: String = "fixture") = WorkerSession(
+        URI.create("http://127.0.0.1:${server.address.port}"), "session", token, "allocation",
+        root.resolve("identity").also { Files.writeString(it, identity) }, "release", root, root.resolve("unused.sock"), "unused")
+
     @Test fun `packed data batches also split at the byte limit without buffering their payloads`() {
         val root = Files.createTempDirectory("worker-byte-batches")
         val files = (0 until 17).associate { index -> "cases/$index/capture" to root.resolve("capture-$index").also {
@@ -52,9 +58,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             assertEquals("packed-batches", worker.commitResult(AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"),
                 IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
             assertEquals(listOf(16, 1), counts); assertEquals(listOf(PACKED_BYTES.toLong(), 4L * 1024 * 1024), sizes); assertTrue(committed)
@@ -86,9 +90,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             assertEquals(if (large) "packed" else "inline", worker.commitResult(AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"),
                 IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
             assertEquals(1, calls.get())
@@ -127,9 +129,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             assertEquals("packed-batches", worker.commitResult(owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
             assertEquals(listOf(128, 128, 128, 1), counts); assertEquals(1, commits)
         } finally { server.stop(0); deleteTree(root) }
@@ -161,9 +161,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             assertEquals("resumable", worker.commitResult(AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"),
                 IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
             assertEquals(1, batchCalls.get()); assertEquals(129, offsets.get()); assertEquals(1, commits.get())
@@ -183,9 +181,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
             assertEquals("inline", worker.commitResult(owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), emptyMap()))
             assertEquals(listOf(owner, owner, owner), owners)
@@ -215,9 +211,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
             assertEquals(if (captures) "packed" else "resumable", worker.commitResult(owner,
                 IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2, record))), if (captures) mapOf("0.out" to file) else emptyMap()))
@@ -249,9 +243,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             val bundle = WorkerBundle(hash, listOf(InputFile("code", hash, bytes.size.toLong())), "Eignex/example", "a".repeat(40), "linux", "amd64", "fixture")
             worker.download(bundle).use { input -> assertContentEquals(bytes, input.readAllBytes()); assertEquals(-1, input.read()) }
             assertEquals(listOf(0, 32768, 32768, 65536, 98304), offsets)
@@ -275,9 +267,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
             assertEquals("packed", worker.commitResult(owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), mapOf("0.out" to file, "0.err" to file)))
             assertEquals(5, calls.get())
@@ -302,9 +292,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
             assertEquals("inline", worker.commitResult(owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), mapOf("0.out" to one, "0.err" to one, "0.exit" to empty)))
             assertEquals(1, requests.get())
@@ -330,9 +318,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             val trace = PreparationTrace()
             assertEquals(hash, worker.upload(file, AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"), reusable = true, trace = trace))
             assertEquals(1, gets.get()); assertEquals(2, puts.get())
@@ -366,9 +352,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture-identity-secret") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "fixture-bearer-secret", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root, token = "fixture-bearer-secret", identity = "fixture-identity-secret")
             val budget = ResourceBudget(1000, 512)
             val recorder = PreparationRecorder(ResourceObservation("advisory-native", budget, null, null, "test", "test", "test", emptyMap()), PreparationTrace())
             worker.preparationRecorder = recorder
@@ -409,9 +393,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity"); Files.writeString(identity, "fixture-identity")
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root, identity = "fixture-identity")
             assertEquals(hash, worker.upload(file, AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")))
             assertTrue(dropped.get())
             assertEquals(hash, hashFile(artifacts.file(1, hash)))
@@ -441,9 +423,7 @@ class WorkerTransferTest {
         }
         server.start()
         try {
-            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
-            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
-                "release", root, root.resolve("unused.sock"), "unused")
+            val worker = worker(server, root)
             val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
             assertEquals(hash, worker.upload(file, owner, reusable = true))
             job = 2
