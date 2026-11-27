@@ -46,11 +46,6 @@ class ExecutionMaintenance internal constructor(private val store: Store) {
             WHERE a.iteration_id = '${ExecutionStore.PREPARATION}' AND a.state = 'committed' AND json_valid(a.result) AND key LIKE '%$MANIFEST_PART_REF')""")
     }
 
-    /**
-     * Drop the manifests, often megabytes each, of stopped sessions of jobs done before [doneBefore], at most [batch]
-     * sessions; how many went. Only a done job: a failed or cancelled one may be retried, and a retry replaces its
-     * sessions from their manifests. A small batch keeps each write short; call again until it returns 0.
-     */
     /** Move at most [batch] manifests still in their session rows to `execution_manifests`; how many moved. Call again
      *  until it returns 0. */
     fun moveManifests(batch: Int = 5): Int = store.executionTransaction { db ->
@@ -64,6 +59,11 @@ class ExecutionMaintenance internal constructor(private val store: Store) {
         ids.size
     }
 
+    /**
+     * Drop the manifests, often megabytes each, of stopped sessions of jobs done before [doneBefore], at most [batch]
+     * sessions; how many went. Only a done job: a failed or cancelled one may be retried, and a retry replaces its
+     * sessions from their manifests. A small batch keeps each write short; call again until it returns 0.
+     */
     fun dropDoneManifests(doneBefore: Long, batch: Int = 5): Int = store.executionTransaction { db ->
         db.sqlUpdate("""DELETE FROM execution_manifests WHERE session_id IN (
             SELECT s.id FROM execution_manifests m JOIN execution_sessions s ON s.id = m.session_id JOIN jobs j ON j.id = s.job_id
