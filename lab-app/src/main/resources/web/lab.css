@@ -206,6 +206,10 @@ td.num {
     text-align: right;
 }
 
+td.num {
+    font-variant-numeric: tabular-nums;
+}
+
 .RUNNING {
     color: var(--run);
 }
@@ -556,10 +560,6 @@ fieldset:disabled {
     background: var(--soft);
     border-radius: 5px;
     overflow-wrap: anywhere;
-}
-
-td.num {
-    font-variant-numeric: tabular-nums;
 }
 
 tr[data-in] td:first-child {
