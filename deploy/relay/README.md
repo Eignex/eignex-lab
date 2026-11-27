@@ -1,9 +1,8 @@
 # Optional public relay fallback
 
-The lab returned to direct public IPv4 access on 2026-11-16. The temporary relay and its dedicated AWS
-resources were retired. This runbook describes a fallback for a future connection behind carrier-grade NAT;
-a dynamic public home address alone does not require a relay. See [Public access](../SETUP.md#public-access)
-for the normal setup and automatic address updates.
+No relay is running: the lab uses direct public IPv4 access (see [Public access](../SETUP.md#public-access)).
+This runbook is a fallback for a connection behind carrier-grade NAT; a dynamic public home address alone does
+not require a relay.
 
 A fallback relay forwards TCP 80, 443 and 4647 to the Mac over three outbound SSH connections. HTTPS and
 Nomad mutual TLS terminate on the Mac; the relay holds neither application credentials nor TLS private keys.
