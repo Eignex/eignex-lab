@@ -24,7 +24,7 @@ class RepositoryFixtures(
     private val worktrees: (Revision) -> List<File>,
     /** The directories worktrees live in, on the lab and on a cloud node: a planned path under one is a repository path. */
     private val worktreeRoots: List<String>,
-    private val hash: (File) -> String = ::sha256,
+    private val hash: (File) -> String = CorpusFiles::sha256,
     private val mirrorFor: (Revision) -> File = { mirror },
 ) {
     /** Whether [problem]'s source is a file of the klause repository rather than of the corpus. */
