@@ -66,7 +66,7 @@ class CapacityAdapterTest {
     }
 
     @Test fun `the exported contract is what adapters check against`() {
-        val settings = CapacitySettings.read(Path.of(System.getProperty("lab.repositoryRoot"), "deploy/nomad/capacity-architectures.example.json"))
+        val settings = CapacitySettings.read(repositoryFile("deploy/nomad/capacity-architectures.example.json"))
         val path = root.resolve("exported.json")
         Files.writeString(path, Json.encodeToString(CapacityContract.serializer(), CapacityContract.of(settings)))
         val first = settings.pools.first()

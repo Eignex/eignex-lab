@@ -143,7 +143,7 @@ class VcpusTest {
     }
 
     @Test fun `the operator queue example still validates with its one-case preparation budget`() {
-        val example = Json.decodeFromString<NomadQueueSettings>(Files.readString(Path.of(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json")))
+        val example = Json.decodeFromString<NomadQueueSettings>(Files.readString(repositoryFile("deploy/nomad/queue.example.json")))
         assertEquals(ResourceBudget(2000, 4096, 1), example.preparationBudget)
         val cloud = example.targets.single { !it.native }
         assertEquals(ResourceBudget(6000, 12288), example.preparationBudget(cloud, job(16)))

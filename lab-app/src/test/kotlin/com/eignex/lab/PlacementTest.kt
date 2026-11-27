@@ -26,7 +26,7 @@ class PlacementTest {
     private fun config(cloud: Boolean = true): Config {
         val dir = Files.createTempDirectory("lab")
         val queue = dir.resolve("queue.json")
-        if (cloud) queue.toFile().writeText(java.io.File(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json").readText().replace("6000", "16000").replace("\"logicalCpus\": 8", "\"logicalCpus\": 16"))
+        if (cloud) writeWideExampleQueue(queue)
         return Config(dataDir = dir, cores = 8, maxParallel = 6, nomadQueueSettings = queue.takeIf { cloud })
     }
 

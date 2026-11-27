@@ -55,7 +55,7 @@ class SubmissionOptionsTest {
     @Test
     fun `schedule responses round trip through tags without changing pinned policy or measured identity`() = testApplication {
         val root = Files.createTempDirectory("schedule tags")
-        val queue = root.resolve("queue.json").also { it.writeText(java.io.File(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json").readText()) }
+        val queue = writeExampleQueue(root.resolve("queue.json"))
         val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue)
         val store = Store(config.database)
         val original = ExperimentSpec("status-sweep", bench = BenchSpec("bench.json"), description = "regression sweep", priority = 100)
@@ -130,7 +130,7 @@ class SubmissionOptionsTest {
     @Test
     fun `opaque recording requests survive immediate submissions and schedule edits`() = testApplication {
         val root = Files.createTempDirectory("measurement api")
-        val queue = root.resolve("queue.json").also { it.writeText(java.io.File(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json").readText()) }
+        val queue = writeExampleQueue(root.resolve("queue.json"))
         // vcpus are capped at the local cores; fix them so the assertion does not depend on the runner's size.
         val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue, cores = 8)
         val store = Store(config.database)
@@ -161,12 +161,8 @@ class SubmissionOptionsTest {
         val root = Files.createTempDirectory("submission client")
         try {
             root.resolve("curl").apply { writeText("#!/bin/sh\ncat\n"); toFile().setExecutable(true) }
-            fun command(vararg args: String): Pair<Int, String> = ProcessBuilder(listOf("bash", java.nio.file.Path.of(System.getProperty("lab.repositoryRoot"), "deploy/lab").toString()) + (if (args.firstOrNull() == "profile") listOf("profile", "--repo", "Eignex/example", "--classpath", "tools/lib/*") + args.drop(1) else args.toList()))
-                .redirectErrorStream(true).apply {
-                    environment()["PATH"] = "$root:${System.getenv("PATH")}"
-                    environment()["LAB_PASSWORD"] = "fixture-password"
-                    environment()["LAB_URL"] = "http://example.invalid"
-                }.start().let { process ->
+            fun command(vararg args: String): Pair<Int, String> = labClient("http://example.invalid", "fixture-password", (if (args.firstOrNull() == "profile") listOf("profile", "--repo", "Eignex/example", "--classpath", "tools/lib/*") + args.drop(1) else args.toList()))
+                .redirectErrorStream(true).apply { environment()["PATH"] = "$root:${System.getenv("PATH")}" }.start().let { process ->
                     val output = process.inputStream.bufferedReader().readText()
                     process.waitFor() to output
                 }

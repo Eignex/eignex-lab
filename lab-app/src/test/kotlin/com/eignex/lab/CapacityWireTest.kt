@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
 class CapacityWireTest {
     @Test
     fun `the coordinator speaks the wire format deploy capacity-wire json holds`() {
-        val wire = Json.parseToJsonElement(Files.readString(Path.of(System.getProperty("lab.repositoryRoot"), "deploy/capacity-wire.json"))).jsonObject
+        val wire = Json.parseToJsonElement(Files.readString(repositoryFile("deploy/capacity-wire.json"))).jsonObject
         assertEquals(wire.getValue("grantDomain").jsonPrimitive.content, CapacityWire.GRANT_DOMAIN)
         assertEquals(wire.getValue("grantSchemaVersion").jsonPrimitive.int, CapacityWire.GRANT_SCHEMA_VERSION)
         assertEquals(wire.getValue("startupGrantSchemaVersion").jsonPrimitive.int, CapacityWire.STARTUP_GRANT_SCHEMA_VERSION)
@@ -38,7 +38,7 @@ class CapacityWireTest {
 
     @Test
     fun `the exported contract is each pool's identity, size and limit`() {
-        val settings = CapacitySettings.read(Path.of(System.getProperty("lab.repositoryRoot"), "deploy/nomad/capacity-architectures.example.json"))
+        val settings = CapacitySettings.read(repositoryFile("deploy/nomad/capacity-architectures.example.json"))
         val contract = CapacityContract.of(settings)
         assertEquals(settings.pools.map { it.id }, contract.pools.map { it.id })
         val first = settings.pools.first()
@@ -49,7 +49,7 @@ class CapacityWireTest {
     @Test
     fun `cloud hosts arm their lifetime protection before secret retrieval on both providers`() {
         for (provider in listOf("aws", "gcp")) {
-            val text = Files.readString(Path.of(System.getProperty("lab.repositoryRoot"), "deploy/infra/$provider/user-data.sh.tftpl"))
+            val text = Files.readString(repositoryFile("deploy/infra/$provider/user-data.sh.tftpl"))
             val armed = text.indexOf("systemctl enable --now lab-lifetime.timer")
             assertTrue(armed >= 0, provider)
             assertTrue(armed < text.indexOf("mkdir -p"), provider)
