@@ -21,7 +21,6 @@ sqlite = { module = "org.xerial:sqlite-jdbc", version = "3.50.3.0" }
 zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
 commons-compress = { module = "org.apache.commons:commons-compress", version = "1.28.0" }
 logback = { module = "ch.qos.logback:logback-classic", version = "1.5.18" }
-slf4j = { module = "org.slf4j:slf4j-api", version = "2.0.17" }
 aws-lambda = { module = "com.amazonaws:aws-lambda-java-core", version = "1.2.3" }
 gcp-functions = { module = "com.google.cloud.functions:functions-framework-api", version = "1.1.4" }
 javax-json = { module = "org.glassfish:javax.json", version = "1.1.2" }
