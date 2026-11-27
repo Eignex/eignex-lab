@@ -19,7 +19,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.concurrent.CancellationException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -346,7 +345,7 @@ class PortableWorkerTest {
         val bytes = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
             files.forEach { (name, text) -> zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray()); zip.closeEntry() }
         } }.toByteArray()
-        val manifest = WorkerBundle(MessageDigest.getInstance("SHA-256").digest(bytes).hex(), files.map { (name, text) ->
+        val manifest = WorkerBundle(sha256Hex(bytes), files.map { (name, text) ->
             InputFile(name, ExecutionStore.digest(text), text.toByteArray().size.toLong(), name.startsWith("bin/"))
         }, Repositories.DEFAULT, "a".repeat(40), if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(), "fixture")
         return manifest to bytes

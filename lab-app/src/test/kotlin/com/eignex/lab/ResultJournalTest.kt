@@ -26,7 +26,7 @@ import kotlin.test.*
 class ResultJournalTest {
     @Test fun `conversion from a receiving reservation never reopens admission in the hysteresis band`() {
         ResultJournal(journal, external, maxBytes = 65536, start = false).use { store ->
-            val bytes = ByteArray(30000) { 3 }; val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+            val bytes = ByteArray(30000) { 3 }; val sha = sha256Hex(bytes)
             store.putPacked(1, listOf(ResultBlob(sha, bytes.size.toLong())), bytes.inputStream())
             val status = store.status(); val thresholds = status.solveAdmission!!
             assertTrue(status.bytes in (thresholds.resumeAtBytes + 1) until thresholds.holdAtBytes)
@@ -90,7 +90,7 @@ class ResultJournalTest {
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val pool = Executors.newSingleThreadExecutor()
         ResultJournal(journal, external, maxBytes = 57856, start = false).use { store ->
-            val bytes = ByteArray(40000) { 1 }; val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+            val bytes = ByteArray(40000) { 1 }; val sha = sha256Hex(bytes)
             val input = object : java.io.InputStream() {
                 override fun read(): Int = error("bulk reads expected")
                 override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -257,7 +257,7 @@ class ResultJournalTest {
     @ParameterizedTest @ValueSource(booleans = [false, true])
     fun `external batch barriers precede reclamation and repeat after restart with complete files`(large: Boolean) {
         val payloads = (0..1).map { value -> ByteArray(if (large) 600 * 1024 else 16 * 1024) { ((it + value) % 251).toByte() } }
-            .associateBy { java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() }
+            .associateBy { sha256Hex(it) }
         var barriers = 0
         var fail = true
         fun destination(): ArtifactStore {

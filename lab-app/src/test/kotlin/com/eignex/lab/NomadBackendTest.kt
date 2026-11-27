@@ -523,7 +523,7 @@ class NomadBackendTest {
         val durableBackend = NomadBackend(store, control, journal, { root.resolve("jobs/$it") })
         application { workerApi(store, durableBackend, journal) { true } }
         val bytes = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
-        val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val sha = sha256Hex(bytes)
         val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.out" to sha))
         suspend fun send(owner: AttemptOwner, content: ByteArray): HttpResponse {
             val header = Json.encodeToString(WorkerPackedCommit(owner, result, listOf(ResultBlob(sha, bytes.size.toLong())))).toByteArray()
@@ -705,8 +705,8 @@ class NomadBackendTest {
         val journal = ResultJournal(root.resolve("regional-journal"), RegionalArtifactStore(artifacts, RegionalBlobs(), root.resolve("fetches"), results), start = false)
         val regionalBackend = NomadBackend(store, control, journal, { root.resolve("jobs/$it") })
         application { workerApi(store, regionalBackend, journal) { true } }
-        val capture = ByteArray(64 * 1024) { (it % 13).toByte() }; val sha = java.security.MessageDigest.getInstance("SHA-256").digest(capture).hex()
-        val small = "small".toByteArray(); val smallSha = java.security.MessageDigest.getInstance("SHA-256").digest(small).hex()
+        val capture = ByteArray(64 * 1024) { (it % 13).toByte() }; val sha = sha256Hex(capture)
+        val small = "small".toByteArray(); val smallSha = sha256Hex(small)
         val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) },
             mapOf("cases/0/profile-x/cli.jfr" to sha, "0.out" to smallSha), regionalBlobs = mapOf(sha to capture.size.toLong()))
         val body = WorkerInlineCommit(claim.owner, result, mapOf(smallSha to Base64.getEncoder().encodeToString(small)))
@@ -744,7 +744,7 @@ class NomadBackendTest {
         val regional = RegionalArtifactStore(artifacts, RegionalBlobs(), root.resolve("fetches"), results)
         val regionalBackend = NomadBackend(store, control, regional, { root.resolve("jobs/$it") })
         application { workerApi(store, regionalBackend, regional) { true } }
-        val capture = "an expiring capture".toByteArray(); val sha = java.security.MessageDigest.getInstance("SHA-256").digest(capture).hex()
+        val capture = "an expiring capture".toByteArray(); val sha = sha256Hex(capture)
         results.objects[sha] = capture
         val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.err" to sha), regionalBlobs = mapOf(sha to capture.size.toLong()))
         val response = client.post("/worker/v1/sessions/${session.id}/commit") {
@@ -2120,7 +2120,7 @@ class NomadBackendTest {
     @Test fun `verified artifacts project only accepted complete iterations and survive restart`() {
         val id = setup(1); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!
-        val bytes = "case log".toByteArray(); val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val bytes = "case log".toByteArray(); val sha = sha256Hex(bytes)
         assertEquals(3, artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes.take(3).toByteArray())))
         assertFailsWith<IllegalArgumentException> { artifacts.file(id, sha) }
         artifacts.put(id, sha, bytes.size.toLong(), 3, ByteArrayInputStream(bytes.drop(3).toByteArray()))

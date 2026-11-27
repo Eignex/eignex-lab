@@ -7,7 +7,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.PosixFilePermission.GROUP_WRITE
-import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit.SECONDS
@@ -18,7 +17,6 @@ import kotlin.test.*
 
 class ArtifactFileVerificationTest {
     private val root = Files.createTempDirectory("artifact-file-verification")
-    private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
     private fun bytes() = ByteArray(70_000) { (it % 251).toByte() }
     private fun file(name: String, content: String = "hello") = root.resolve(name).also { Files.writeString(it, content) }
     @AfterTest fun close() { deleteTree(root) }
@@ -200,7 +198,7 @@ class ArtifactFileVerificationTest {
     }
 
     @Test fun `fresh and resumed verified publications seed only the publishing store after barriers`() {
-        val data = bytes(); val expected = sha(data); var reads = 0
+        val data = bytes(); val expected = sha256Hex(data); var reads = 0
         val proof = ArtifactFileVerification(hash = { reads++; hashFile(it) }); val store = LocalArtifactStore(root, proof)
         store.put(1, expected, data.size.toLong(), 0, data.inputStream())
         store.file(1, expected); store.open(1, expected).use { assertEquals(data[0].toInt() and 255, it.read()) }
@@ -214,7 +212,7 @@ class ArtifactFileVerificationTest {
     }
 
     @Test fun `failed shared barrier retains bytes without publishing a verification hint`() {
-        val data = bytes(); val expected = sha(data); var reads = 0
+        val data = bytes(); val expected = sha256Hex(data); var reads = 0
         val proof = ArtifactFileVerification(hash = { reads++; hashFile(it) }); val store = LocalArtifactStore(root, proof)
         assertFailsWith<IOException> {
             store.publishBatch(1, { throw IOException("barrier failed") }) {
@@ -230,7 +228,7 @@ class ArtifactFileVerificationTest {
     }
 
     @Test fun `changes between rename and the shared barrier cannot seed a verification hint`() {
-        val data = bytes(); val expected = sha(data); val proof = ArtifactFileVerification()
+        val data = bytes(); val expected = sha256Hex(data); val proof = ArtifactFileVerification()
         val store = LocalArtifactStore(root, proof)
         store.publishBatch(1, {
             val path = root.resolve("1/$expected"); val modified = Files.getLastModifiedTime(path)
@@ -266,10 +264,10 @@ class ArtifactFileVerificationTest {
 
     @Test fun `tiny publications avoid added proof metadata and corrupt resumed prefixes are still rejected`() {
         var observations = 0; val proof = ArtifactFileVerification(observe = { observations++; TreeVerification.fileMetadata(it) })
-        val store = LocalArtifactStore(root, proof); val data = "small".toByteArray(); val expected = sha(data)
+        val store = LocalArtifactStore(root, proof); val data = "small".toByteArray(); val expected = sha256Hex(data)
         store.put(1, expected, data.size.toLong(), 0, data.inputStream())
         assertEquals(0, observations); assertEquals(0, proof.entryCount)
-        val large = bytes(); val largeSha = sha(large)
+        val large = bytes(); val largeSha = sha256Hex(large)
         store.put(2, largeSha, large.size.toLong(), 0, byteArrayOf(127).inputStream())
         assertFailsWith<IllegalStateException> {
             store.put(2, largeSha, large.size.toLong(), 1, large.copyOfRange(1, large.size).inputStream())

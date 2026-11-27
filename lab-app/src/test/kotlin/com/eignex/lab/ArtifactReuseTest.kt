@@ -157,7 +157,7 @@ class ArtifactReuseTest {
 
     @Test fun `complete bounded publication preserves full files and rejects invalid bounds before creating directories`() {
         val values = (0..126).map { n -> ByteArray(if (n == 0) 16384 else 8192) { ((it + n) % 251).toByte() } } + byteArrayOf()
-        val payloads = values.associateBy { java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() }
+        val payloads = values.associateBy { sha256Hex(it) }
         val descriptors = payloads.map { ResultBlob(it.key, it.value.size.toLong()) }
         assertEquals(128, descriptors.size); assertEquals(INLINE_BYTES.toLong(), descriptors.sumOf { it.bytes })
         store().putComplete(1, descriptors) { payloads.getValue(it.sha).inputStream() }
