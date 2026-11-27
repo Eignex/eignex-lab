@@ -7,7 +7,6 @@
   const valid = m => Number.isFinite(m.value) && m.value > 0 && ['lower', 'higher'].includes(m.direction);
   const slowdown = (before, after) => before.direction === 'higher' ? before.value / after.value : after.value / before.value;
   const kind = m => m.engine && m.name.endsWith('/' + m.engine) ? m.name.slice(0, -m.engine.length - 1) : m.name;
-  const selection = (r, m) => JSON.stringify([workload(r, m.caseId)?.workload || m.caseId, kind(m), m.unit, m.direction]);
 
   /** Targets use earlier comparable run medians, never the selected measurement or a future run. */
   function caseComparisons(runs, selected, method = 'p05') {
@@ -55,8 +54,7 @@
           w.instrumented ? 'instrumented' : measured ? 'measured' : 'unavailable';
         rows.push({workload: w, metric: m, engine: engine(m), current: measured?.value ?? null, target,
           ratio: status === 'measured' && valid(measured) && target > 0 ? slowdown({...m, value: target}, measured) : null,
-          samples: values.length, limited: method !== 'best' && values.length > 0 && values.length < 20, status,
-          selection: m.name ? selection(selected, m) : null});
+          samples: values.length, limited: method !== 'best' && values.length > 0 && values.length < 20, status});
       }
     }
     return rows.sort((a, b) => (b.ratio ?? -Infinity) - (a.ratio ?? -Infinity) ||
@@ -162,14 +160,10 @@
         const ratio = missing.length || logs.length !== ids.length ? null : Math.exp(logs.reduce((a, b) => a + b, 0) / ids.length);
         return {ratio, baseline: p.baseline, coverage: ids.length, missing: missing.length,
           count: missing.length ? null : new Set(changes.map(c => c.after.caseId)).size, changes};
-      },
-      changes(r, theme) {
-        return [...(points.get(r.job)?.values() || [])].flatMap(p => p.changes)
-          .filter(c => !theme || c.workload.theme === theme).sort((a, b) => b.ratio - a.ratio);
       }
     };
   }
-  const api = {engine, key, segment, selection, workload, slowdown, history, caseComparisons, caseTable, sortCases};
+  const api = {engine, key, history, caseComparisons, caseTable, sortCases};
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.BenchmarkHistory = api;
 })(typeof window === 'object' ? window : globalThis);

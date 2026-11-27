@@ -104,14 +104,13 @@ test('confirmations apply only to the matching metric and recorded baseline', ()
   assert.equal(H.history([before, after, next]).point(next, 'jvm-scalar').changes[0].confirmation, 'candidate');
 });
 
-test('unsupported engines are absent from coverage and absolute selections join exact engines', () => {
+test('unsupported engines are absent from coverage and engines keep distinct metric keys', () => {
   const before = run(1), after = run(2);
   for (const r of [before, after]) r.benchmark.metrics = r.benchmark.metrics.filter(m => m.caseId !== 'dot' || m.engine !== 'jvm-simd');
   const history = H.history([before, after]);
   assert.equal(history.point(after, 'jvm-simd').coverage, 1);
   assert.equal(history.point(after, 'jvm-scalar').coverage, 2);
   const metrics = before.benchmark.metrics.filter(m => m.caseId === 'gemm');
-  assert.equal(H.selection(before, metrics[0]), H.selection(before, metrics[1]));
   assert.notEqual(H.key(metrics[0]), H.key(metrics[1]));
 });
 
