@@ -11,8 +11,8 @@ adapter or shell script. The SDK does not replace JMH or time a callback on the 
 
 ## Import
 
-Releases use public GitHub Release assets; consuming builds need no GitHub login or token. Version `0.1.1`
-includes the shared workspace checksum cache and must be published before consumers of that API resolve it.
+Releases use public GitHub Release assets; consuming builds need no GitHub login or token. The current release is
+`0.1.1`.
 
 Add this repository to the consuming bench module's `build.gradle.kts`:
 
@@ -182,10 +182,6 @@ Commit a JSON `BenchEntryPoint` manifest beside the suite:
 }
 ```
 
-Bench submissions require the coordinator and workers from this change. Their work manifests explicitly use
-schema version 2 so older workers reject them rather than interpreting them as solver experiments; existing
-solver/profile work retains schema version 1. Deploy the matching worker release before submitting bench jobs.
-
 The lab reads this manifest from the pinned source revision. Preparation runs its build tasks, calls `describe`
 and `plan`, freezes the cases and inventories their inputs. Execution relocates the prepared output and corpus,
 validates input hashes, and runs each case once per execution attempt. Infrastructure retries use the same frozen
@@ -213,15 +209,14 @@ Submit an experiment file with `lab run experiment.json`:
 Cases, runtime flags and instrumentation belong to the adapter; the lab does not add JFR or Vector API flags.
 A manifest may list top-level `"planInputs": ["example-bench/src", "example-bench/sets"]`: the files that, with the
 request and corpus, determine `plan`. The lab then reuses an accepted plan across commits whose plan inputs are equal;
-without it, reuse is limited to the same commit. See `docs/runs.md` in the lab repository.
+without it, reuse is limited to the same commit. See [plan reuse](../docs/runs.md#plan-and-build-reuse).
 Top-level `configs`/`grid` pair revisions and opaque `param.<key>` request overrides; `repeats` repeats whole paired
-iterations. Reference arms use declared solver-domain input files. Solver records support regression confirmations
-that replay accepted prepared bundles and frozen workloads. These controls require manifest schema 3 workers.
+iterations (see [paired runs](#paired-runs-and-runtime-declarations)).
 
 Optional `bench.runTimeoutSec` limits the job's total active preparation/execution time to 1–7200 seconds;
 queue time is excluded. The allowance persists across worker replacements. Workers reserve shutdown/transfer
 time, retain partial files and report a permanent deadline failure. Without it, the adapter's per-case resource
-ceilings apply without a separate whole-job limit. Worker and coordinator releases must support these fields.
+ceilings apply without a separate whole-job limit.
 
 Set `bench.sourceValidation` to `true` to request the lab's independent source-witness checks for solver-domain
 records. The coordinator uses the preserved solve record, final witness and source hashes; the SDK request and
@@ -284,11 +279,8 @@ Top-level `configs` and `grid` expand paired arms. Each arm selects a `ref` and 
 opaque request values with `param.<key>`. Top-level `repeats` repeats each paired block; the
 suite owns seed expansion. Plans are resolved at each pinned commit and retained separately.
 
-One paired row contains the same workload, seed and repetition from every arm. The lab executes all
-arms of that row on one machine in one worker attempt and accepts the complete row together. Other rows
-and source preparation may use other compatible machines. A failed attempt is replaced as a complete
-row; arms from different machines or attempts are not joined into an accepted pair. Ordinary A/B jobs
-use automatic placement and do not require one machine for the entire experiment.
+One paired row contains the same workload, seed and repetition from every arm; the lab runs and accepts
+each row whole on one machine (see [paired rows](../docs/runs.md#experiments)).
 
 `attributes.comparisonKey` optionally names the same workload across runtime variants; it defaults
 to the case id. Keys must be unique and all arms must select the same workload identities and
@@ -332,9 +324,8 @@ runtime/target requirements and differing declarations between comparison arms a
 
 The resolved contract is frozen with the source build recipe under worker manifest protocol 6. Preparation acceptance
 checks the declared output platform; solve workers receive only that accepted target archive, with its approved file
-hashes. Existing saved manifests and accepted results keep their original identities. Deploy protocol-6 workers before
-submitting jobs with this declaration. An ordinary A/B row still executes every arm on the same compatible solve
-machine in one attempt; the compilation host is independent of that guarantee.
+hashes. An ordinary A/B row still executes every arm on the same compatible solve machine in one attempt; the
+compilation host is independent of that guarantee.
 
 For solver-v1 workloads, reference arms use `backend=reference`, `solver`, `timeout` in ms,
 `processors` and optional `fixed`. The repository planner still resolves the frozen files, including
@@ -345,17 +336,14 @@ remain separate. Selection caps remain repository-owned and are not refilled aft
 
 Bench schedules preserve their explicit checking policy. A solver regression queues a confirmation
 with the same repository, request, placement, selected workload bytes and both pinned source commits.
-Bench confirmations retain compatible placement instead of inheriting the legacy native-only policy.
-It reuses the original accepted prepared bundles for both revisions instead of resolving build dependencies again.
-Changed requests or missing retained builds are refused.
-It repeats paired blocks three times. Invalid witnesses and exact objective/proof semantics keep the
+It reuses the original accepted prepared bundles for both revisions instead of resolving build dependencies again;
+changed requests or missing retained builds are refused. It repeats paired blocks three times. Invalid witnesses and exact objective/proof semantics keep the
 same solver-v1 interpretation. Generic metric-only suites do not claim solver regressions.
 
 Generic suites can opt into benchmark confirmations with case attributes `regressionPolicy=metric-v1`,
 `regressionMetric=<name>` and `regressionThreshold=<fraction between 0 and 1>`. A multi-engine workload
 may instead declare `regressionMetrics=<comma-separated names>`: each metric votes independently,
-while confirmation selection retains one workload and reruns every engine together. This requires the
-coordinator version supporting `regressionMetrics`; deploy it before migrating a schedule. Each result must retain identical
+while confirmation selection retains one workload and reruns every engine together. Each result must retain identical
 nonempty `details.benchmarkControls` for comparable runtimes and hardware. Only equal pinned cases, input bytes,
 parameters and resource controls compare. Successful positive metrics with equal units and a LOWER/HIGHER direction
 trigger a rerun beyond the relative threshold; explicit SUCCESS/FAILED transitions trigger correctness reruns.
@@ -366,11 +354,8 @@ At most 40 workloads are selected per confirmation, with correctness transitions
 The confirmation job page reports benchmark failures/recoveries and metric regressions/improvements separately
 from solver feasibility and proof claims. Changing this opt-in policy or its measurement controls starts a new series.
 
-New paired worker manifests use schema 3 so older workers cannot silently execute a canonical case
-for every arm. Deploy matching workers and coordinator before migrating schedules. Legacy solver
-recipes are refused at admission; their owning repository supplies the translation and profile wrapper.
-Saved records and captures remain readable. The only retained consumer implementation dependency
-is the MPS parser within the independent checker boundary.
+Legacy solver recipes are refused at admission; their owning repository supplies the translation and
+profile wrapper. Saved records and captures remain readable.
 
 ## Workflow regression coverage
 
@@ -379,7 +364,6 @@ schedule completion and frozen two-revision confirmations. The Mac worker gate a
 `BenchWorkflowTest`, `BenchRunsTest` and `RunnerTest`. Portable worker tests execute declared Java
 and tool preflights, so missing prerequisites fail before entering a repository adapter.
 
-Retain the original accepted preparations and complete row receipts when validating a migration.
 A checked request does not mean every witness was checkable, and a valid witness does not prove
 optimality. Generic failed/skipped records remain separate from successful solver outcomes.
 `deploy/lab fetch` publishes a listed file only after a successful transfer with exactly the listed
@@ -404,12 +388,11 @@ The `release-bench` workflow validates and publishes assets for tags named `lab-
 `lab-bench-v0.1.1`. The workflow uploads KBuild's staged assets with `gh release create --latest=false` so an SDK
 release does not replace the service's latest-release channel; KBuild's upload task does not expose that flag.
 Only publication uses GitHub credentials. Published versions must keep their asset names and
-contents unchanged; consumers pin an exact SDK version. This change does not publish a release by itself.
+contents unchanged; consumers pin an exact SDK version.
 
 Consumer corpus transport settings use `LAB_CORPUS_MIRROR`, `LAB_CORPUS_MIRROR_WRITE`,
 `LAB_CORPUS_KEEP_PACKED` and the preparation-only `LAB_INPUT_SIGNER`. These are generic
-input capabilities; adapters own their pack formats and downloads. Replace older consumer-specific
-worker variables when deploying the matching coordinator/worker release. Provider credentials
+input capabilities; adapters own their pack formats and downloads. Provider credentials
 and worker authentication tokens are not forwarded to consumer processes.
 
 For metadata-only discovery outside planning, use `deploy/lab corpus-index <collection>`
