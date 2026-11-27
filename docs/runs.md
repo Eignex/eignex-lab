@@ -129,6 +129,17 @@ have `vcpus` capped at its cores. Without `vcpus` the lab's default (4) applies;
 `parallel` is its retired name and still means the same; a spec that gives both must give them equal.
 `lab vcpus <id> <n>` changes it for a running job.
 
+A session narrowed by remaining capacity can hold fewer slots than a row has arms; the row then still runs whole
+in one attempt, but its later arms start as earlier ones finish, so arms see different contention by launch
+position. For paired timing comparisons, set `"simultaneousArms": true` together with a `vcpus` that leaves one
+slot per arm: `arms × case CPUs + 1`, so `"vcpus": 5` for four CPU1 arms. Automatic placement then admits a solve
+session only when its granted CPU and memory hold a whole row, and otherwise waits for such a grant instead of
+starting narrower. A worker never starts a row its free slots cannot hold, so every arm of a row starts at once.
+A job whose `vcpus` or the lab's limits can never grant that many slots is refused with the `vcpus` it needs;
+lowering `vcpus` below that on a running job refuses it the same way. Rows, replacement of lost attempts and
+CLI and adapter measurement scopes are unchanged. With `comparison-series`, the setting is part of the
+measurement fingerprint.
+
 If a worker is lost before accepting a complete row, the lab replaces that unfinished row as a whole.
 It does not combine arm A from one machine or attempt with arm B from another. Accepted rows remain
 accepted. Retain failed-attempt and preparation costs, and investigate repeated losses as an operational

@@ -85,11 +85,11 @@ data class NomadQueueSettings(
      * case's CPUs), within the target's CPU ceiling, running [Experiments.caseConcurrency] cases, each with its memory,
      * at most [maxCases] and as many as the target's memory holds; [cpuCeiling] is the local cores for the native worker.
      * [memoryCeiling] can fit a new native session into unreserved memory without reducing any case's requirements.
-     * A session claims whole paired rows until they fill those case slots ([ExecutionStore.claim]); null when not one
-     * case fits.
+     * A session claims whole paired rows until they fill those case slots ([ExecutionStore.claim]); null when fewer
+     * than [minCases] cases fit (a whole row, for [ExperimentSpec.simultaneousArms]).
      */
     fun solveBudget(target: NomadQueueTarget, job: Job, plan: com.eignex.lab.bench.BenchPlan? = null, maxCases: Int = Int.MAX_VALUE,
-                    cpuCeiling: Int = Int.MAX_VALUE, memoryCeiling: Int = Int.MAX_VALUE): ResourceBudget? {
+                    cpuCeiling: Int = Int.MAX_VALUE, memoryCeiling: Int = Int.MAX_VALUE, minCases: Int = 1): ResourceBudget? {
         val resources = plan?.let(BenchCases::resources)
         val largest = resources?.cpus ?: Experiments.arms(checkNotNull(job.experiment)).maxOf { it.cores }
         val memory = resources?.memoryMiB?.let(Math::toIntExact) ?: caseMemoryMiB
@@ -99,7 +99,7 @@ data class NomadQueueSettings(
         if (vcpus < largest) return null
         val concurrency = Experiments.caseConcurrency(vcpus, largest)
         val cases = minOf(concurrency, maxCases, (minOf(maximum.memoryMiB, memoryCeiling) - sessionMemoryMiB) / memory)
-        if (cases < 1) return null
+        if (cases < maxOf(1, minCases)) return null
         // Memory may hold fewer cases than the vCPUs would run: then reserve only their CPUs and the worker's one.
         val cpus = if (cases == concurrency) vcpus else minOf(vcpus, Math.addExact(Math.multiplyExact(cases, largest), 1))
         return ResourceBudget(Math.multiplyExact(cpus, 1000), sessionMemoryMiB + cases * memory, cases)

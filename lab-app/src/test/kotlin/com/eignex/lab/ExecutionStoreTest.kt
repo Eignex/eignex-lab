@@ -259,6 +259,25 @@ class ExecutionStoreTest {
         assertNotNull(store.execution.claim("wide", token, "alloc-wide", 1020, claimId = name(2)))
     }
 
+    @Test fun `simultaneous arms never start a row the free slots cannot hold`() {
+        val id = job(problems = 2, simultaneousArms = true); wide(id, slots = 1)
+        assertNull(store.execution.claim("wide", token, "alloc-wide", 1001, claimId = name(1)), "an idle one-slot session waits")
+        assertNull(store.execution.claim("wide", token, "alloc-wide", 1002), "an unnamed claim waits too")
+        assertTrue(store.job(id)!!.commands.all { it.host == null })
+    }
+
+    @Test fun `simultaneous arms take only whole rows that start together`() {
+        val id = job(problems = 4, simultaneousArms = true); wide(id, slots = 3)
+        // Two arms a row: three slots hold one row, never a second one that would wait for a slot.
+        val claim = store.execution.claim("wide", token, "alloc-wide", 1001)!!
+        assertWholeRows(id, claim)
+        assertEquals(2, claim.indices.size); assertEquals(2, claim.parallel)
+        commit(claim, 1002)
+        val named = store.execution.claim("wide", token, "alloc-wide", 1003, claimId = name(1))!!
+        assertEquals(2, named.indices.size); assertEquals(2, named.parallel)
+        assertNull(store.execution.claim("wide", token, "alloc-wide", 1004, claimId = name(2)), "one free slot holds no row")
+    }
+
     @Test fun `an unnamed claim keeps one attempt a session and names are checked`() {
         val id = job(problems = 4); wide(id)
         val named = store.execution.claim("wide", token, "alloc-wide", 1001, claimId = name(1))!!
@@ -349,8 +368,9 @@ class ExecutionStoreTest {
     private val token = ExecutionStore.token()
     private val budget = ResourceBudget(2000, 2048, 2)
 
-    private fun job(problems: Int = 2): Long {
-        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), seeds = listOf(1), host = HostPlacement.AUTO)
+    private fun job(problems: Int = 2, simultaneousArms: Boolean = false): Long {
+        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), seeds = listOf(1), host = HostPlacement.AUTO,
+            simultaneousArms = simultaneousArms)
         val id = store.create("ab", "main", emptyList(), vcpus = 2, experiment = spec)
         val cases = Experiments.cases(problems, 2, spec.seeds)
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, List(problems) { Problem("s", "p$it") }, cases, cases.map { "true" to 10L })

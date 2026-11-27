@@ -181,6 +181,20 @@ class NomadQueue(
                 val cpuLimit = maxOf(Math.multiplyExact(this.settings.maxVcpusPerJob, 1000), minimumCpu)
                 // The native worker is one node: there the job's sessions together hold at most its vCPUs.
                 val nativeLimit = maxOf(Math.multiplyExact(current.vcpus, 1000), minimumCpu)
+                // Simultaneous arms: every session holds a slot per arm of the widest row, or waits for one that does.
+                val rowWidth = if (!spec.simultaneousArms) 1 else store.plans.casePlan(job.id)
+                    .groupingBy { Triple(it.problem, it.seed, it.repeat) }.eachCount().values.maxOrNull() ?: 1
+                if (rowWidth > 1) {
+                    val perHost = this.settings.perHostParallel ?: Int.MAX_VALUE
+                    if (targets.none { target ->
+                            val widest = if (target.native) settings.solveBudget(target, current, preparedBench, minOf(config.maxParallel, perHost),
+                                minOf(config.cores * 1000, nativeLimit), minCases = rowWidth)
+                            else settings.solveBudget(target, current, preparedBench, perHost, cpuLimit, minCases = rowWidth)
+                            widest != null
+                        }) throw AdmissionRejected("simultaneousArms needs $rowWidth case slots per session, one per arm of a row, " +
+                            "but no worker grants that many within the job's vcpus and the lab's limits; raise vcpus to at least " +
+                            "${rowWidth * (minimumCpu / 1000) + 1} or drop simultaneousArms")
+                }
                 // Existing sessions may have shrunk to fit prior capacity. Admit by actual remaining resources below,
                 // not an assumed ideal session width; every useful session still needs a whole pending paired row.
                 val limit = minOf(this.settings.maxSessionsPerJob, pending)
@@ -231,12 +245,13 @@ class NomadQueue(
                         (cap - nativeSessions.sumOf { it.budget.parallel }).coerceAtLeast(0)
                     } ?: Int.MAX_VALUE
                     fun fitting(target: NomadQueueTarget): ResourceBudget? = if (!target.native)
-                        settings.solveBudget(target, current, preparedBench, cpuCeiling = remainingCpu)
+                        settings.solveBudget(target, current, preparedBench, cpuCeiling = remainingCpu, minCases = rowWidth)
                     else
                         settings.solveBudget(target, current, preparedBench, minOf(config.maxParallel, nativeCases),
                             cpuCeiling = minOf(remainingCpu.toLong(), config.cores * 1000L - reserved.first,
                                 nativeLimit - nativeSessions.sumOf { it.budget.cpuMillis.toLong() }).coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
-                            memoryCeiling = (target.template.budget.memoryMiB - reserved.second).coerceIn(0, Int.MAX_VALUE.toLong()).toInt())
+                            memoryCeiling = (target.template.budget.memoryMiB - reserved.second).coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
+                            minCases = rowWidth)
                     val available = ordered.mapNotNull { target -> fitting(target)?.takeIf { it.cpuMillis <= remainingCpu }?.let { target to it } }
                         .filter { (target, _) ->
                             // A per-host cap needs the previous cloud placement bound before deciding which hosts still have

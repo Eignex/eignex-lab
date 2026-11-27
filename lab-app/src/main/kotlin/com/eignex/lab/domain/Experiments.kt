@@ -21,7 +21,8 @@ object Experiments {
      * by either, still measures the same thing, and a stored spec that names any host matches one that names another.
      * An arm's `debug` is measured: `debug=false` turns the CLI's runtime statistics off, which changes what a solve
      * runs and records, so it starts another fingerprint. `debug=true` is the default, so saying it changes nothing.
-     * A bench request with `comparison-series` also measures parallelism: its aggregate CPU grant affects CLI/JIT work.
+     * A bench request with `comparison-series` also measures parallelism: its aggregate CPU grant affects CLI/JIT work,
+     * and whether a row's arms start together ([ExperimentSpec.simultaneousArms]) affects each arm's contention.
      * Its stored key is still `parallel`, which counted cases at once before it counted vCPUs: one vCPU runs one case
      * as one case at once did, so that keeps its fingerprint, while a larger value starts another.
      */
@@ -36,6 +37,7 @@ object Experiments {
             configs = spec.configs.map(::measured),
             grid = spec.grid.toSortedMap(),
             vcpus = spec.vcpus.takeIf { series },
+            simultaneousArms = spec.simultaneousArms && series,
             priority = 0,
             confirm = false,
             host = LAB_HOST,
