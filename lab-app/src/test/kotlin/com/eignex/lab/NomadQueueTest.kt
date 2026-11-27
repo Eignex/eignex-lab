@@ -1147,6 +1147,30 @@ class NomadQueueTest {
         assertEquals(setOf("same-node"), sessions.map { it.node }.toSet())
     }
 
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `simultaneous arms wait for a session that holds a whole row instead of narrowing one`(simultaneous: Boolean) {
+        val id = job(ExperimentSpec("rows", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), vcpus = 3,
+            simultaneousArms = simultaneous, host = Experiments.AWS_HOST))
+        queue().reconcile(); prepare(id, 8); backend.reconcile()
+        repeat(3) { queue().reconcile() }
+        val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        // Eight vCPUs a job: two sessions of three, then two left for one slot, narrower than a row of two arms.
+        val expected = listOf(ResourceBudget(3000, 256 + 2 * 512, 2), ResourceBudget(3000, 256 + 2 * 512, 2)) +
+            if (simultaneous) emptyList() else listOf(ResourceBudget(2000, 256 + 512, 1))
+        assertEquals(expected.sortedBy { it.cpuMillis }, solves.map { it.budget }.sortedBy { it.cpuMillis })
+        assertFalse(store.job(id)!!.status.isTerminal)
+    }
+
+    @Test fun `simultaneous arms refuse a job whose vCPUs cannot hold a row`() {
+        val id = job(ExperimentSpec("too-narrow", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), vcpus = 2,
+            simultaneousArms = true, host = Experiments.AWS_HOST))
+        queue().reconcile(); prepare(id, 4); backend.reconcile(); queue().reconcile()
+        val job = store.job(id)!!
+        assertEquals(Status.FAILED, job.status)
+        assertContains(job.error.orEmpty(), "raise vcpus to at least 3")
+        assertTrue(store.execution.sessions(id).none { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
+    }
+
     @Test fun `one vCPU is the width of each session, not the job's total, and no session reserves a node`() {
         val id = job(ExperimentSpec("one-vcpu", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.AWS_HOST))
         queue().reconcile(); prepare(id, 8); backend.reconcile()

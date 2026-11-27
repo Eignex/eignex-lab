@@ -277,11 +277,16 @@ class ExecutionStore internal constructor(private val store: Store) {
             if (slots <= 0) return@executionTransaction null
             // Whole rows only: every arm of a row runs here, in this one attempt, and a lost attempt gives all its rows
             // back. A named claim takes the next row alone, once the free slots hold all its arms or nothing else runs;
-            // an unnamed one takes rows until they fill the slots. One row keeps its own key.
+            // an unnamed one takes rows until they fill the slots. One row keeps its own key. With simultaneous arms
+            // every claimed arm starts at once: no row is taken unless the free slots hold all of it.
+            val simultaneous = store.job(session.jobId)!!.experiment?.simultaneousArms == true
             val rows = mutableListOf(rowsFree.first())
-            if (claimId != null) {
-                if (running.isNotEmpty() && rows.single().value.size > slots) return@executionTransaction null
-            } else for (row in rowsFree.drop(1)) { if (rows.sumOf { it.value.size } >= slots) break; rows += row }
+            if ((simultaneous || claimId != null && running.isNotEmpty()) && rows.single().value.size > slots) return@executionTransaction null
+            if (claimId == null) for (row in rowsFree.drop(1)) {
+                val taken = rows.sumOf { it.value.size }
+                if (taken >= slots || simultaneous && taken + row.value.size > slots) break
+                rows += row
+            }
             val iteration = rows.singleOrNull()?.key ?: rows.map { it.key }.let { keys ->
                 "${keys.first()}+${keys.size - 1}~${digest(keys.joinToString(",")).take(12)}"
             }

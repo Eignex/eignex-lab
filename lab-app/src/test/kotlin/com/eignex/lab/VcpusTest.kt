@@ -87,6 +87,27 @@ class VcpusTest {
         assertNull(settings.solveBudget(target(3000, 65536), job(16, wideCase), plan))
     }
 
+    @Test fun `simultaneous arms refuse a session narrower than a row instead of shrinking it`() {
+        // Four CPU1 arms need five vCPUs; the 13729 grants: 5,000 mCPU and 16,896 MiB held four, 2,000 mCPU held one.
+        val four = settings.copy(caseMemoryMiB = 4096)
+        assertEquals(ResourceBudget(5000, 512 + 4 * 4096, 4), four.solveBudget(wide, job(5), minCases = 4))
+        assertNull(four.solveBudget(wide, job(5), cpuCeiling = 2000, minCases = 4))
+        assertEquals(1, four.solveBudget(wide, job(5), cpuCeiling = 2000)?.parallel)
+        assertNull(four.solveBudget(wide, job(5), memoryCeiling = 512 + 3 * 4096, minCases = 4))
+        assertNull(four.solveBudget(wide, job(4), minCases = 4))
+        assertNull(four.solveBudget(wide, job(16), maxCases = 3, minCases = 4))
+    }
+
+    @Test fun `simultaneous arms are accepted from input and measured only in a comparison series`() {
+        assertTrue(input("""{"name":"e","bench":{"manifest":"bench.json"},"vcpus":5,"simultaneousArms":true}""").simultaneousArms)
+        assertFalse(input("""{"name":"e","bench":{"manifest":"bench.json"}}""").simultaneousArms)
+        assertEquals(Experiments.fingerprint(spec), Experiments.fingerprint(spec.copy(simultaneousArms = true)))
+        val series = spec.copy(bench = BenchSpec("bench.json", request = BenchRequest(parameters = mapOf("comparison-series" to "s"))))
+        assertNotEquals(Experiments.fingerprint(series), Experiments.fingerprint(series.copy(simultaneousArms = true)))
+        // Unset, a recorded spec keeps the fingerprint it had before the field existed.
+        assertFalse(Json.encodeToString(ExperimentSpec.serializer(), series).contains("simultaneousArms"))
+    }
+
     @Test fun `a preparation grows with the job's vcpus from the configured floor within its target`() {
         val floor = settings.copy(preparationBudget = ResourceBudget(2000, 4096, 1), maxVcpusPerJob = 32)
         assertEquals(ResourceBudget(2000, 4096), floor.preparationBudget(wide, job(1)))

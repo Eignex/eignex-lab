@@ -35,6 +35,13 @@ data class ExperimentSpec(
      */
     @SerialName("parallel")
     val vcpus: Int? = null,
+    /**
+     * Every arm of a paired row starts at once, each in its own case slot. A solve session is admitted only when its
+     * granted slots hold a whole row, and otherwise waits for capacity rather than starting narrower; a session never
+     * starts a row its free slots cannot hold. [vcpus] must leave a slot per arm. Off, a row may run on fewer slots
+     * than it has arms, its later arms starting as earlier ones finish.
+     */
+    val simultaneousArms: Boolean = false,
     val priority: Int = 0,
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
