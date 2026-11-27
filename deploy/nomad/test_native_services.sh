@@ -349,4 +349,22 @@ test_downloads_are_verified_against_the_pins() {
   check "writes nothing" test ! -e "$root/other"
 }
 
+test_a_missing_setting_fails_once_with_its_own_reason() {
+  local case filter reason
+  for case in 'del(.labLauncher)|settings lack labLauncher' \
+    '.capacityAdapter = {launcher: "/lab/releases/one/bin/eignex-lab", provider: "aws"}|capacityAdapter lacks config' \
+    '.capacityAdapter = {launcher: "/lab/releases/one/bin/eignex-lab", config: "/a.json"}|capacityAdapter lacks provider' \
+    '.inputSigner = {enabled: true}|inputSigner lacks config'; do
+    filter="${case%%|*}" reason="${case#*|}"
+    setup
+    edit "$root/settings.json" "$filter"
+    render && { echo "  failed: accepted settings without $reason" >&2; exit 1; }
+    equal "native-services: $reason" "$(cat "$root/rendered")" "the one error for $filter"
+  done
+  setup
+  edit "$root/client.json" 'del(.data_dir)'
+  render && { echo "  failed: accepted a client without data_dir" >&2; exit 1; }
+  equal "native-services: Nomad configuration $root/client.json lacks data_dir" "$(cat "$root/rendered")" "the one error"
+}
+
 run_tests "$@"

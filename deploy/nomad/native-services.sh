@@ -41,6 +41,22 @@ setting() {
     <<< "$settings" || fail "settings lack $1"
 }
 
+# setting_path <variable> <key>: set <variable> to the setting as an absolute path (see absolute); fails when it is
+# missing. setting's own failure ends only its command substitution, so this ends the script after its message.
+setting_path() {
+  local text
+  text="$(setting "$2")" || exit 1
+  absolute "$1" "$text"
+}
+
+# json_path <variable> <reason> <jq filter> [file]: set <variable> to the filter's text of the file (the settings
+# without one) as an absolute path; fails with <reason> when the filter finds nothing.
+json_path() {
+  local text
+  if (( $# > 3 )); then text="$(jq -er "$3" "$4")"; else text="$(jq -er "$3" <<< "$settings")"; fi || fail "$2"
+  absolute "$1" "$text"
+}
+
 # A jq truthiness that matches Python's.
 truthy='def truthy: . != null and . != false and . != 0 and . != "" and . != [] and . != {};'
 
@@ -65,22 +81,22 @@ render() {
   local server_path client_path coordinator_config reason file user role signer_config
   local adapter_launcher adapter_provider adapter_config
   local -a roles
-  absolute data "$(setting dataDir)"
+  setting_path data dataDir
   # shellcheck disable=SC2154 # absolute sets it
   local state="$data/nomad"
   [[ -n "$output" ]] || output="$state/service-files"
-  absolute launcher "$(setting labLauncher)"
-  absolute worker "$(setting workerLauncher)"
+  setting_path launcher labLauncher
+  setting_path worker workerLauncher
   [[ "$worker/" != */current/* ]] || fail "worker launcher must pin an immutable release"
-  absolute binary "$(setting nomadBinary)"
-  absolute supervisor "$(setting supervisorLauncher)"
+  setting_path binary nomadBinary
+  setting_path supervisor supervisorLauncher
   # The supervisor outlives ordinary updates, so it runs from an immutable release, never the moving current one.
   [[ "$supervisor/" != */current/* ]] || fail "supervisor launcher must pin an immutable release"
-  absolute socket "$(setting supervisorSocket)"
-  absolute local_lock "$(setting localLock)"
-  absolute home "$(setting home)"
+  setting_path socket supervisorSocket
+  setting_path local_lock localLock
+  setting_path home home
   setting path > /dev/null
-  absolute java "$(setting javaHome)"
+  setting_path java javaHome
   environment="$(jq -c --arg home "$home" --arg java "$java" --arg data "$data" --arg lock "$local_lock" \
     '{HOME: $home, PATH: .path, JAVA_HOME: $java, LAB_DATA: $data, LAB_NATIVE_EXECUTION_LOCK: $lock}
      + (.labEnvironment // {})' <<< "$settings")" || fail "unreadable labEnvironment"
@@ -89,13 +105,13 @@ render() {
   # Supervisor and Nomad agents never inherit the lab's provider/control configuration.
   agent_environment="$(jq -r '{PATH, HOME, JAVA_HOME} | to_entries[] | "\(.key)=\(.value)"' <<< "$environment")"
   environment="$(jq -r 'to_entries[] | "\(.key)=\(.value)"' <<< "$environment")"
-  absolute server_path "$(setting serverConfig)"
-  absolute client_path "$(setting clientConfig)"
+  setting_path server_path serverConfig
+  setting_path client_path clientConfig
   for file in "$server_path" "$client_path"; do
     jq -e 'type == "object"' "$file" > /dev/null 2>&1 || fail "cannot read Nomad configuration $file"
     reason="$(check_agent "$file")" || fail "cannot read Nomad configuration $file"
     [[ -z "$reason" ]] || fail "$reason"
-    absolute reason "$(jq -er '.data_dir' "$file" || fail "Nomad configuration $file lacks data_dir")"
+    json_path reason "Nomad configuration $file lacks data_dir" .data_dir "$file"
   done
   jq -e "$truthy"'((.server // {}).enabled | truthy) and .server.bootstrap_expect == 1' "$server_path" > /dev/null ||
     fail "initial server must be explicitly single-server"
@@ -105,13 +121,13 @@ render() {
     "$client_path" > /dev/null || fail "native client requires raw_exec"
   jq -e '((.client.reserved // {}).memory // 0) > 0' "$client_path" > /dev/null ||
     fail "native client requires a host memory reserve"
-  absolute coordinator_config "$(setting coordinatorConfig)"
+  setting_path coordinator_config coordinatorConfig
   roles=(nomad-server nomad-client process-supervisor nomad-coordinator)
   if jq -e "$truthy"'.inputSigner | truthy' <<< "$settings" > /dev/null; then
     # The signer runs the lab launcher, whose path stays the same across releases: an update never changes its plist.
     jq -e '.inputSigner | type == "object" and (has("python") or has("script")) | not' <<< "$settings" > /dev/null ||
       fail "inputSigner now runs the lab launcher (eignex-lab input-signer): remove its python and script settings"
-    absolute signer_config "$(jq -er '.inputSigner.config' <<< "$settings" || fail "inputSigner lacks config")"
+    json_path signer_config "inputSigner lacks config" .inputSigner.config
     roles+=(input-signer)
   fi
   if jq -e "$truthy"'.capacityAdapter | truthy' <<< "$settings" > /dev/null; then
@@ -119,11 +135,11 @@ render() {
     # only when its launcher or configuration does.
     jq -e '.capacityAdapter | type == "object" and (has("python") or has("script")) | not' <<< "$settings" > /dev/null ||
       fail "capacityAdapter runs the lab launcher (eignex-lab capacity-adapter): remove its python and script settings"
-    absolute adapter_launcher "$(jq -er '.capacityAdapter.launcher' <<< "$settings" || fail "capacityAdapter lacks launcher")"
+    json_path adapter_launcher "capacityAdapter lacks launcher" .capacityAdapter.launcher
     [[ "$adapter_launcher/" != */current/* ]] || fail "capacity adapter launcher must pin an immutable release"
-    adapter_provider="$(jq -er '.capacityAdapter.provider' <<< "$settings" || fail "capacityAdapter lacks provider")"
+    adapter_provider="$(jq -er '.capacityAdapter.provider' <<< "$settings")" || fail "capacityAdapter lacks provider"
     [[ "$adapter_provider" == aws || "$adapter_provider" == gcp ]] || fail "capacityAdapter provider must be aws or gcp"
-    absolute adapter_config "$(jq -er '.capacityAdapter.config' <<< "$settings" || fail "capacityAdapter lacks config")"
+    json_path adapter_config "capacityAdapter lacks config" .capacityAdapter.config
     roles+=(capacity-adapter)
   fi
   user="$(jq -r 'if has("user") then .user else empty end' <<< "$settings")"
