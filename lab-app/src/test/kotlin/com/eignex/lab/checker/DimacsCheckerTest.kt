@@ -11,11 +11,6 @@ import com.eignex.lab.nomad.*
 import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
-import com.eignex.lab.execution.Checkers
-import com.eignex.lab.cli.DimacsCheckBench
-
-import com.eignex.lab.domain.Config
-import com.eignex.lab.domain.Problem
 import com.eignex.lab.bench.BenchRequest
 import java.nio.file.Files
 import kotlinx.serialization.json.*

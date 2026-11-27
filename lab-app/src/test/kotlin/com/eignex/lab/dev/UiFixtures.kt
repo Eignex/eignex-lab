@@ -8,6 +8,7 @@ import com.eignex.lab.analysis.TrendPoints
 import com.eignex.lab.domain.*
 import com.eignex.lab.bench.*
 import com.eignex.lab.store.*
+import com.eignex.lab.util.hex
 import com.eignex.lab.util.now
 import kotlinx.serialization.json.*
 import java.nio.file.Files
@@ -142,6 +143,6 @@ internal class UiFixtures(private val config: Config, private val store: Store, 
         Files.writeString(dir.resolve("${case.index}.err"), "")
     }
 
-    private fun sha(revision: Int): String = java.security.MessageDigest.getInstance("SHA-1")
-        .digest("preview-$revision".toByteArray()).joinToString("") { "%02x".format(it) }
+    /** A stable 40-character commit for [revision]. */
+    private fun sha(revision: Int): String = java.security.MessageDigest.getInstance("SHA-1").digest("preview-$revision".toByteArray()).hex()
 }

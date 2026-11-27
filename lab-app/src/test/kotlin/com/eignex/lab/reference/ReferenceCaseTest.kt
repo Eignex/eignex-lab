@@ -11,7 +11,6 @@ import com.eignex.lab.nomad.*
 import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
-import com.eignex.lab.analysis.References
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
