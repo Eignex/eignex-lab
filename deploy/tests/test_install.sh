@@ -98,6 +98,16 @@ test_queue_settings_retain_immutable_releases_even_without_native_service_files(
   for index in 0 1 2 3; do check "keeps previous-$index" test -d "$data/releases/previous-$index"; done
 }
 
+test_restart_without_running_services_succeeds_on_the_mac() {
+  setup
+  mkdir -p "$root/bin"
+  printf '#!/bin/sh\necho Darwin\n' > "$root/bin/uname"
+  printf '#!/bin/sh\nexit 1\n' > "$root/bin/pgrep"
+  chmod 755 "$root/bin/uname" "$root/bin/pgrep"
+  PATH="$root/bin:$PATH" bash -c 'set -e; . "$1"; restart_services' fixture "$deploy/release.sh" ||
+    { echo "  failed: restart_services with nothing running" >&2; exit 1; }
+}
+
 failures=0
 tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
 for test in $tests; do
