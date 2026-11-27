@@ -253,13 +253,15 @@ class DiskUsage internal constructor(
 
     private fun store(path: Path): FileStore? = runCatching { Files.getFileStore(path) }.getOrNull()
 
-    /** What Docker holds, by `docker system df`, when the lab uses it. */
+    /**
+     * What Docker holds, by `docker system df`, when the lab uses it. A wedged Docker daemon must not hold the measurement
+     * lock for good, so the call has a time limit; its stderr, merged in, is not a `{` line [DockerCleanup.parseDf] reads.
+     */
     private fun docker(check: () -> Unit): List<DockerUsage> = if (!docker.required) emptyList() else runCatching {
         check()
-        val process = ProcessBuilder(Background.prefix + listOf("docker", "system", "df", "--format", "{{json .}}"))
-            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
-        val out = process.inputStream.bufferedReader().readText()
-        if (process.waitFor() == 0) DockerCleanup.parseDf(out) else emptyList()
+        val (exit, out) = runProcess(Background.prefix + listOf("docker", "system", "df", "--format", "{{json .}}"),
+            timeout = java.time.Duration.ofMinutes(DOCKER_DF_MIN))
+        if (exit == 0) DockerCleanup.parseDf(out) else emptyList()
     }.getOrDefault(emptyList())
 
     /**
@@ -317,6 +319,7 @@ class DiskUsage internal constructor(
         const val PAUSE_MS = 20_000L
         const val STATE_FILE = "disk-usage.json"
         private const val HOUR_MS = 3_600_000L
+        private const val DOCKER_DF_MIN = 5L
         private const val TOP_JOBS = 30
         private const val JOB_CHUNK = 50
         private const val KIB = 1024L
