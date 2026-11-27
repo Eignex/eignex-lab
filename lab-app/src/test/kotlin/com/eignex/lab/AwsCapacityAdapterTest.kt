@@ -271,7 +271,7 @@ class AwsCapacityAdapterTest {
     }
 
     @Test fun `the examples one pool's setup is copied from name that pool alike`() {
-        fun load(path: String) = Json.parseToJsonElement(Files.readString(Path.of(System.getProperty("lab.repositoryRoot"), path))).jsonObject
+        fun load(path: String) = Json.parseToJsonElement(Files.readString(repositoryFile(path))).jsonObject
         fun ids(path: String, list: String, key: String) = load(path).getValue(list).jsonArray.map { it.jsonObject.getValue(key).jsonPrimitive.content }.toSet()
         val single = ids("deploy/nomad/capacity.example.json", "pools", "id")
         assertEquals(single, ids("deploy/nomad/autoscaler.example.json", "targets", "pool"))

@@ -60,12 +60,8 @@ class RepositoryRunsTest {
         val root = Files.createTempDirectory("lab client")
         try {
             root.resolve("curl").apply { writeText("#!/bin/sh\ncat\n"); toFile().setExecutable(true) }
-            fun payload(vararg args: String) = ProcessBuilder(listOf("bash", java.nio.file.Path.of(System.getProperty("lab.repositoryRoot"), "deploy/lab").toString()) + args)
-                .redirectErrorStream(true).apply {
-                    environment()["PATH"] = "$root:${System.getenv("PATH")}"
-                    environment()["LAB_PASSWORD"] = "fixture-password"
-                    environment()["LAB_URL"] = "http://example.invalid"
-                }.start().let { process ->
+            fun payload(vararg args: String) = labClient("http://example.invalid", "fixture-password", args.toList())
+                .redirectErrorStream(true).apply { environment()["PATH"] = "$root:${System.getenv("PATH")}" }.start().let { process ->
                     val output = process.inputStream.bufferedReader().readText()
                     assertEquals(0, process.waitFor(), output)
                     Json.parseToJsonElement(output).jsonObject

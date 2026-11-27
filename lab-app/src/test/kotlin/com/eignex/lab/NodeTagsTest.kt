@@ -108,9 +108,7 @@ class NodeTagsTest {
         assertEquals(1, store.active().size)
     }
 
-    private fun cloudQueue(root: java.nio.file.Path): java.nio.file.Path = root.resolve("queue.json").also {
-        it.writeText(java.io.File(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json").readText().replace("simd:avx2", "simd:avx512"))
-    }
+    private fun cloudQueue(root: java.nio.file.Path): java.nio.file.Path = writeExampleQueue(root.resolve("queue.json")) { it.replace("simd:avx2", "simd:avx512") }
 
     @Test
     fun `macOS probing detects SME independently from ordinary SVE`() {

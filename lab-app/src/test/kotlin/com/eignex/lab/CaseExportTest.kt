@@ -153,9 +153,8 @@ class CaseExportTest {
     /** What `deploy/lab <args>` printed against the lab on [port]; it must succeed. */
     private fun lab(port: Int, vararg args: String): String {
         val out = Files.createTempFile("lab", ".out")
-        val process = ProcessBuilder(listOf("bash", Path.of(System.getProperty("lab.repositoryRoot"), "deploy/lab").toAbsolutePath().toString()) + args)
+        val process = labClient("http://127.0.0.1:$port", "test", args.toList())
             .redirectOutput(out.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT)
-            .apply { environment()["LAB_URL"] = "http://127.0.0.1:$port"; environment()["LAB_PASSWORD"] = "test" }
             .start()
         assertTrue(process.waitFor(60, TimeUnit.SECONDS), "lab ${args.joinToString(" ")} timed out")
         assertEquals(0, process.exitValue(), "lab ${args.joinToString(" ")}")

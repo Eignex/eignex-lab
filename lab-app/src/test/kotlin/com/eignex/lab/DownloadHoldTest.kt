@@ -220,9 +220,8 @@ class DownloadHoldTest {
 
     /** The exit status of `deploy/lab <args>` against the lab on [port]. */
     private fun lab(port: Int, vararg args: String): Int {
-        val process = ProcessBuilder(listOf("bash", Path.of(System.getProperty("lab.repositoryRoot"), "deploy/lab").toAbsolutePath().toString()) + args)
+        val process = labClient("http://127.0.0.1:$port", "test", args.toList())
             .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.INHERIT)
-            .apply { environment()["LAB_URL"] = "http://127.0.0.1:$port"; environment()["LAB_PASSWORD"] = "test" }
             .start()
         assertTrue(process.waitFor(60, TimeUnit.SECONDS), "lab ${args.joinToString(" ")} timed out")
         return process.exitValue()
