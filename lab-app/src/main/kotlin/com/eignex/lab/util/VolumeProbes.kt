@@ -159,7 +159,7 @@ class VolumeAccess(
     /** What a probe that failed means: a refusal is macOS's privacy protection as often as the directory's permissions. */
     private fun described(label: String, dir: Path, e: Throwable): String {
         val detail = e.message ?: e.toString()
-        val refused = e is AccessDeniedException || detail.contains("not permitted", ignoreCase = true)
+        val refused = e is java.nio.file.AccessDeniedException || detail.contains("not permitted", ignoreCase = true)
         return if (refused) "cannot access $label directory $dir ($detail): ${hint()}" else "cannot access $label directory $dir: $detail"
     }
 
@@ -172,8 +172,6 @@ class VolumeAccess(
         const val TIMEOUT_MS = 10_000L
         const val FRESH_MS = 15_000L
         private const val NANOS_PER_MS = 1_000_000L
-
-        /** The one this process checks its directories with. */
 
         /** The java binary this process runs, its links resolved: the one macOS's privacy settings must name. */
         fun javaBinary(): String {
