@@ -48,8 +48,7 @@ class ToolResourcesTest {
             val input = File(work, "input.smt2").apply { writeText("checked") }
             val command = listOf("/bin/cat")
 
-            val result = ToolProcess.run(command, work, 5000, stdin = input,
-                limits = ToolLimits(2, 5000), inputFiles = listOf(input))
+            val result = BoundedToolProcess.run(command, work, ToolLimits(2, 5000), stdin = input, inputs = listOf(input))
 
             assertEquals(0, result.exit)
             assertEquals("checked", result.stdout)
@@ -69,8 +68,7 @@ class ToolResourcesTest {
     fun `output at the file limit should not qualify`() {
         val work = Files.createTempDirectory("tool-resources").toFile()
         try {
-            val result = ToolProcess.run(listOf("/bin/sh", "-c", "head -c 1048576 /dev/zero"), work, 5000,
-                limits = ToolLimits(2, 5000))
+            val result = BoundedToolProcess.run(listOf("/bin/sh", "-c", "head -c 1048576 /dev/zero"), work, ToolLimits(2, 5000))
 
             val receipt = assertNotNull(result.resources)
             assertFalse(receipt.qualified())
@@ -84,8 +82,7 @@ class ToolResourcesTest {
     fun `a hanging tool should lose verdict credit at its deadline`() {
         val work = Files.createTempDirectory("tool-resources").toFile()
         try {
-            val result = ToolProcess.run(listOf("/bin/sh", "-c", "exec sleep 30"), work, 100,
-                limits = ToolLimits(2, 100))
+            val result = BoundedToolProcess.run(listOf("/bin/sh", "-c", "exec sleep 30"), work, ToolLimits(2, 100))
 
             assertTrue(result.timedOut)
             assertTrue(result.elapsedMs < 10_000)

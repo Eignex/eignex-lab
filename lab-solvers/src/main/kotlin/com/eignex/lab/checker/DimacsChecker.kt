@@ -38,12 +38,11 @@ class DimacsChecker : FormatChecker {
         val file = File(work, "dimacs-request.json").apply { writeText(request) }
         val java = File(System.getProperty("java.home"), "bin/java")
         val classpath = System.getProperty("java.class.path").split(File.pathSeparator).map { File(it).absoluteFile }
-        val run = ToolProcess.run(listOf(java.path, "-Xms16m", "-Xmx256m", "-XX:+UseSerialGC",
+        val run = BoundedToolProcess.run(listOf(java.path, "-Xms16m", "-Xmx256m", "-XX:+UseSerialGC",
             "-XX:MaxMetaspaceSize=128m", "-XX:ReservedCodeCacheSize=64m", "-XX:CompressedClassSpaceSize=32m",
             "-XX:ActiveProcessorCount=1", "-cp", classpath.joinToString(File.pathSeparator) { it.path },
-            DimacsSourceCheckMain::class.java.name, model.absolutePath, file.absolutePath), work, TIMEOUT_MS,
-            limits = ToolLimits(cpuSeconds = 10, timeoutMs = TIMEOUT_MS),
-            env = mapOf("JAVA_TOOL_OPTIONS" to "", "JDK_JAVA_OPTIONS" to "", "_JAVA_OPTIONS" to ""), inputFiles = listOf(model, file, java) + classpath.filter { it.isFile })
+            DimacsSourceCheckMain::class.java.name, model.absolutePath, file.absolutePath), work, ToolLimits(cpuSeconds = 10, timeoutMs = TIMEOUT_MS),
+            env = mapOf("JAVA_TOOL_OPTIONS" to "", "JDK_JAVA_OPTIONS" to "", "_JAVA_OPTIONS" to ""), inputs = listOf(model, file, java) + classpath.filter { it.isFile })
         val receipts = listOfNotNull(run.resources)
         val inputs = listOf(CheckedInput(file.canonicalPath, sha256(file), request))
         fun done(state: String, reason: String) = verdict(state, reason).copy(resourceReceipts = receipts, inputs = inputs,

@@ -20,8 +20,8 @@ data class MiniZincIdentity(val binary: File, val solver: String, val stats: Map
                 val remaining = timeoutMs - (System.nanoTime() - started) / 1_000_000
                 check(remaining > 0) { "MiniZinc identity exceeded its preparation allowance" }
                 val limit = minOf(remaining, 5_000)
-                val run = ToolProcess.run(listOf(binary.path) + arguments, work, limit,
-                    limits = ToolLimits((limit + 999) / 1000, limit), inputFiles = listOf(binary))
+                val run = BoundedToolProcess.run(listOf(binary.path) + arguments, work, ToolLimits((limit + 999) / 1000, limit),
+                    inputs = listOf(binary))
                 check(run.exit == 0 && run.resources?.qualified() == true) { "MiniZinc identity query failed: ${run.tail()}" }
                 receipts += checkNotNull(run.resources)
                 return run.stdout.trim()
