@@ -1,4 +1,10 @@
-# Nomad cloud capacity
+# Cloud capacity modules
+
+OpenTofu modules and host scripts for disposable Linux Spot workers that join the Mac's Nomad server:
+`aws/` (one pool, plus the regional input store scripts), `aws-fleet/` (one pool per instruction-set profile),
+`gcp/` (reference provider), `common/` (image bake, bootstrap and interruption scripts shared by both),
+`tests/` (bash tests against stubs) and `validate.sh` (offline format/schema check). The renewal and expiry
+functions they deploy are built from the `lab-capacity` module.
 
 ## Regional input cache
 
@@ -42,9 +48,8 @@ the prefix refuses the key, and workers then keep sending those outputs to the c
 AWS networking and signing are deployment adapters. Portable workers use an HTTPS store and paths/checksums;
 another provider can supply the same HTTP operations and its own regional routing/signing adapter.
 
-These modules are opt-in migration infrastructure. They do not alter the existing AWS workers or make Nomad the
-lab default. Apply only after reviewing a real plan with the intended account, private routing, instance quota,
-images and secrets. There are no provider credentials in an experiment, portable worker, manifest, or shared
+Apply a module only after reviewing a real plan with the intended account, private routing, instance quota, images
+and secrets. There are no provider credentials in an experiment, portable worker, manifest, or shared
 Kotlin execution code. Provider APIs are called only by the Mac inventory adapters and the independent cloud
 functions, both from the `lab-capacity` module over JDK HTTP (SigV4 on AWS, OAuth on GCP), with no provider SDK; the
 host bootstrap and interruption scripts call the providers' metadata and secret APIs with curl.
@@ -127,7 +132,7 @@ set the shared collector's overall `maxVcpus` and pool limits consistently with 
    SSO or `aws login` profile is resolved by `aws configure export-credentials` (the AWS CLI on the service's PATH).
    Run `eignex-lab capacity-adapter aws CONFIG` as a supervised independent Mac service: give `nomad/native-services.sh`
    a `capacityAdapter` of `{"launcher": "…/releases/RELEASE/bin/eignex-lab", "provider": "aws", "config": "…"}`. It
-   runs `com.eignex.lab.capacity-adapter` from that immutable release with a small JVM and no lab configuration, and
+   runs as the `com.eignex.lab.capacity-adapter` launchd service from that immutable release with a small JVM and no lab configuration, and
    `--install` restarts it only when its launcher or configuration path changes. `capacity-adapter aws CONFIG
    --once` publishes and renews once and exits 1 on failure. Point the coordinator capacity settings at the resulting
    inventory file.
@@ -169,17 +174,11 @@ An old healthy neighbor does not repeatedly reset the circuit. Provider-managed 
 host lifetime remain separate finite-capacity safeguards; the circuit does not terminate healthy workers or
 reset jobs, claims, deadlines, accepted work or accumulated costs.
 
-Deploy startup recovery in order: the updated renewal function and its exact-group termination permission,
-the compatible controller, then the AWS inventory adapter that publishes launch times. Ordinary grants remain
-schema 1. Action grants use schema 2, so older functions reject the unsupported action instead of silently
-ignoring it. Older inventory without launch metadata remains readable and cannot authorize startup removal.
-GCP renewal explicitly rejects startup actions until that provider implements the same recovery contract.
-New host images/templates arm the existing six-hour lifetime timer before secret retrieval or bootstrap
-prechecks; existing hosts need their ordinary lifecycle replacement to receive that guard.
-The host scripts are bash: images baked before that keep their Python scripts until replaced. The AWS user data
-calls `/opt/eignex-lab/bootstrap-aws.sh` either way, so the AMI can change on its own. The GCP startup script calls
-`/opt/eignex-lab/bootstrap-gcp.sh`, which older images lack: apply that template only together with an image baked
-from the same checkout.
+Ordinary grants are schema 1; action grants (startup replacement) are schema 2, so a function that does not know
+the action rejects it instead of ignoring it. Inventory without launch metadata cannot authorize startup removal.
+GCP renewal rejects startup actions. Host images arm the six-hour lifetime timer before secret retrieval or
+bootstrap prechecks. The AWS user data calls `/opt/eignex-lab/bootstrap-aws.sh` and the GCP startup script
+`/opt/eignex-lab/bootstrap-gcp.sh`; bake the image and apply the template from the same checkout.
 
 The image bootstrap checks the actual vCPU count, available memory, architecture and common SIMD flags before
 enabling the client. Templates provide an initial `attr.cpu.usablecompute` calibration. The coordinator reads
@@ -206,14 +205,14 @@ client, secret handling and interruption draining against stubs. `bash deploy/in
 Linux amd64 and checks formatting/schema without account credentials or applying changes. Provider schemas and
 lock files are pinned. These checks cannot establish actual IAM authorization, Spot availability or time-to-delete.
 
-Before rollout, run a real cloud-only canary from zero, record CPU/memory enforcement, co-locate multiple fitting
+Before rolling out a new provider, account or pool shape, run a real cloud-only canary from zero, record CPU/memory enforcement, co-locate multiple fitting
 experiments, revoke a worker after the first arm, and verify all unfinished arms rerun together. Observe no-capacity
 and quota failures in the collector report. Let an empty worker retire without affecting busy neighbors. Finally
 stop the Mac and autoscaler for longer than the lease: verify min/desired/max reach zero, all tagged workers and
 auto-delete disks disappear, and **no replacement appears**. Attempt stale autoscaler growth and renewal with an
 old grant; both must fail. Restart control services and verify only fresh reconciliation reopens capacity. Retain
 account/pool IDs, timestamps, grants with signatures redacted, cloud audit events and allocation provenance as gate
-evidence. Production cutover remains blocked on these real gates and the native Mac solver/JFR gates.
+evidence.
 
 ## GCP Spot reference
 
@@ -280,7 +279,7 @@ bash deploy/infra/aws/audit-inputs.sh \
 ```
 
 The end date is exclusive. It needs jq and uses the AWS CLI's own credentials (environment, profile or
-`aws login`); `--cli-credentials` is still accepted and changes nothing. It writes the full report to `--output`
+`aws login`). It writes the full report to `--output`
 (mode 0600), prints it without billing, and exits 1 unless the endpoint is valid and every observed worker routes
 through it. Billing is account-wide and delayed; empty recent days or a window with no workers cannot prove
 steady-state cache savings. Inspect usage types and estimated-day flags before attributing costs to the lab.
