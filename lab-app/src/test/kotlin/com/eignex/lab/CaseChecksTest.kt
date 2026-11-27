@@ -22,6 +22,18 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 
 class CaseChecksTest {
+    @Test fun `a leased shared-input view stands in for the job's corpus link, whatever became of it`() {
+        val view = java.nio.file.Path.of("/data/.lab-inputs/views/abc")
+        val problem = Problem("mse24", "ramsey/11/0", collection = "mse24", format = "WCNF",
+            model = "lab-corpus/mse24/ramsey.wcnf.zst", data = "/home/ubuntu/corpus/d.dzn",
+            includeDirs = listOf("lab-corpus/lib", "lab-source/include"))
+        val located = problem.corpusIn(view)
+        assertEquals("/data/.lab-inputs/views/abc/mse24/ramsey.wcnf.zst", located.model)
+        assertEquals("/home/ubuntu/corpus/d.dzn", located.data)
+        assertEquals(listOf("/data/.lab-inputs/views/abc/lib", "lab-source/include"), located.includeDirs)
+        assertNull(problem.copy(model = null).corpusIn(view).model)
+    }
+
     @ParameterizedTest
     @ValueSource(strings = ["MINIZINC", "MPS", "WBO"])
     fun `formats without a checker retain their native record through ordinary checks and rechecks`(format: String) {

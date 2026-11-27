@@ -63,8 +63,13 @@ class JobDirArchiver(
         log("job $job archived to $target")
     }
 
-    /** Copies regular files absent from [target] (or of a different size), retaining empty directories. Links and lab
-     * locks are omitted; sealed snapshot files, including consumer lock files, are retained. Returns changed entries. */
+    /**
+     * Copies regular files absent from [target] (or of a different size), retaining empty directories. Symbolic links
+     * are recreated with the same target, so a job keeps the links to its prepared sources and corpus outside its
+     * directory (`nomad/prepared-source/<sha>`, `nomad/prepared-corpus`) that later source checks read. An absolute
+     * link into the hot volume, which the move retires, is omitted, and one the archive cannot hold is logged. Lab
+     * locks are omitted; sealed snapshot files, including consumer lock files, are retained. Returns changed entries.
+     */
     private fun copyMissing(source: Path, target: Path): Int {
         var copied = 0
         val files = Files.walk(source).use { paths -> paths.sorted().toList() }
@@ -73,6 +78,20 @@ class JobDirArchiver(
             val destination = target.resolve(relative.toString())
             if (Files.isDirectory(entry, NOFOLLOW_LINKS)) {
                 if (!Files.isDirectory(destination, NOFOLLOW_LINKS)) { Files.createDirectories(destination); copied++ }
+                continue
+            }
+            if (Files.isSymbolicLink(entry)) {
+                val link = Files.readSymbolicLink(entry)
+                if (link.isAbsolute && link.normalize().startsWith(hot.toAbsolutePath().normalize())) continue
+                if (Files.isSymbolicLink(destination) && Files.readSymbolicLink(destination) == link) continue
+                try {
+                    Files.createDirectories(destination.parent)
+                    Files.deleteIfExists(destination)
+                    Files.createSymbolicLink(destination, link)
+                    copied++
+                } catch (failure: Exception) {
+                    log("$relative not linked in the archive: ${failure.javaClass.simpleName}: ${failure.message}")
+                }
                 continue
             }
             if (!Files.isRegularFile(entry, NOFOLLOW_LINKS)) continue
