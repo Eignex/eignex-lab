@@ -148,14 +148,14 @@ test_capacity_adapter_runs_a_pinned_release_without_lab_configuration() {
   check "explains" grep -q "remove its python and script settings" "$root/rendered"
 }
 
-test_installation_replaces_the_python_adapter_and_restarts_a_changed_one_alone() {
+test_installation_replaces_a_hand_installed_adapter_and_restarts_a_changed_one_alone() {
   setup
   stub_darwin
   edit "$root/settings.json" '.capacityAdapter = {launcher: "/lab/releases/one/bin/eignex-lab", provider: "aws",
     config: "/private/aws-adapter.json"}'
-  # A hand-installed Python adapter already runs under the same label.
+  # A hand-installed adapter already runs under the same label.
   echo com.eignex.lab.capacity-adapter > "$root/running"
-  echo '<plist>python adapter</plist>' > "$root/daemons/com.eignex.lab.capacity-adapter.plist"
+  echo '<plist>hand-installed adapter</plist>' > "$root/daemons/com.eignex.lab.capacity-adapter.plist"
   check "first installation replaces it without --restart-agents" install_services
   check "booted out" grep -qx "launchctl bootout system/com.eignex.lab.capacity-adapter" "$root/sudo.log"
   equal 5 "$(grep -c '^launchctl bootstrap' "$root/sudo.log")" "all five registered"
