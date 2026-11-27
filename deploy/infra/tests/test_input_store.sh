@@ -7,14 +7,8 @@ infra="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 script="$infra/aws/input-store.sh"
 . "$script"
 
-check() {  # check <description> <command...>
-  local description="$1"
-  shift
-  "$@" || { echo "  failed: $description" >&2; exit 1; }
-}
-equal() {  # equal <expected> <actual> <description>
-  [[ "$1" == "$2" ]] || { printf '  failed: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2" >&2; exit 1; }
-}
+# shellcheck source=/dev/null # the shared test harness, checked on its own
+. "$infra/../tests/harness.sh"
 
 # A stub `aws`: answers from $root/aws/<service>-<operation>.json (exit 254 with the error code in
 # <service>-<operation>.error), records every call's arguments in $root/calls, one call per line, NUL-free and
@@ -146,11 +140,4 @@ test_refuses_another_region_an_interface_endpoint_and_other_failures() {
   check "names them" grep -q -- "--vpc --route-table --native-user --receipt" "$root/err"
 }
 
-failures=0
-tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
-for test in $tests; do
-  ( set +e; trap '[[ -z "${root:-}" ]] || rm -rf "$root"' EXIT; "$test" )
-  status=$?
-  if (( status == 0 )); then echo "ok $test"; else echo "FAILED $test"; failures=$((failures + 1)); fi
-done
-(( failures == 0 )) || { echo "$failures failed"; exit 1; }
+run_tests "$@"

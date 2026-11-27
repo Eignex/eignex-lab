@@ -6,14 +6,8 @@ set -uo pipefail
 infra="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 script="$infra/aws/audit-inputs.sh"
 
-check() {  # check <description> <command...>
-  local description="$1"
-  shift
-  "$@" || { echo "  failed: $description" >&2; exit 1; }
-}
-equal() {  # equal <expected> <actual> <description>
-  [[ "$1" == "$2" ]] || { printf '  failed: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2" >&2; exit 1; }
-}
+# shellcheck source=/dev/null # the shared test harness, checked on its own
+. "$infra/../tests/harness.sh"
 
 # A stub `aws`: answers from $root/aws/<service>-<operation>.json (exit 254 with the error code in
 # <service>-<operation>.error) and records every call's arguments in $root/calls, one call per line, separated by tabs.
@@ -137,11 +131,4 @@ test_refuses_missing_arguments_unknown_endpoints_and_aws_failures() {
   check "writes no report" test ! -e "$root/report.json"
 }
 
-failures=0
-tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
-for test in $tests; do
-  ( set +e; trap '[[ -z "${root:-}" ]] || rm -rf "$root"' EXIT; "$test" )
-  status=$?
-  if (( status == 0 )); then echo "ok $test"; else echo "FAILED $test"; failures=$((failures + 1)); fi
-done
-(( failures == 0 )) || { echo "$failures failed"; exit 1; }
+run_tests "$@"

@@ -4,14 +4,8 @@
 set -uo pipefail
 deploy="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-check() {  # check <description> <command...>
-  local description="$1"
-  shift
-  "$@" || { echo "  failed: $description" >&2; exit 1; }
-}
-equal() {  # equal <expected> <actual> <description>
-  [[ "$1" == "$2" ]] || { printf '  failed: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2" >&2; exit 1; }
-}
+# shellcheck source=/dev/null # the shared test harness, checked on its own
+. "$deploy/tests/harness.sh"
 sha() { printf %s "$1" | { if command -v sha256sum > /dev/null; then sha256sum; else shasum -a 256; fi; } | cut -d' ' -f1; }
 setup() {
   root="$(mktemp -d)"
@@ -236,11 +230,4 @@ test_literal_filename_survives_listing_and_component_url_encoding() {
   equal first "$(cat "$dest/names/a b"$'\t''%#'$'\n')" "the literal file"
 }
 
-failures=0
-tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
-for test in $tests; do
-  ( set +e; trap '[[ -z "${root:-}" ]] || rm -rf "$root"' EXIT; "$test" )
-  status=$?
-  if (( status == 0 )); then echo "ok $test"; else echo "FAILED $test"; failures=$((failures + 1)); fi
-done
-(( failures == 0 )) || { echo "$failures failed"; exit 1; }
+run_tests "$@"
