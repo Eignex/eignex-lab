@@ -1133,8 +1133,7 @@ class PortableWorkerTest {
         val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
         try {
             val first = executor.submit<Path> { build("a") }
-            val deadline = System.nanoTime() + 5_000_000_000
-            while (!Files.exists(entered)) { check(System.nanoTime() < deadline) { "first build did not start" }; Thread.sleep(20) }
+            check(eventually(5_000) { Files.exists(entered) }) { "first build did not start" }
             val second = executor.submit<Path> { build("b") }.get(5, java.util.concurrent.TimeUnit.SECONDS)
             assertFalse(first.isDone, "second build must complete while the first still owns its cache")
             Files.writeString(release, "")
@@ -1292,10 +1291,8 @@ class PortableWorkerTest {
             var child: Long? = null
             while (child == null) { check(System.nanoTime() < until) { "done=${future.isDone} " + runCatching { future.get() }.exceptionOrNull() + " err=" + runCatching { Files.readString(root.resolve("err")) + Files.readString(root.resolve("service.err")) }.getOrNull() }; child = runCatching { Files.readString(pid).toLongOrNull() }.getOrNull(); if (child == null) Thread.sleep(20) }
             future.cancel(true) // Socket closes exactly as it does on a killed worker; service survives.
-            val stopped = System.nanoTime() + 5_000_000_000
-            var alive = live(child)
-            while (alive && System.nanoTime() < stopped) { Thread.sleep(20); alive = live(child) }
-            assertFalse(alive, "detached child survived worker loss")
+            val detached: Long = child
+            assertTrue(eventually(5_000) { !live(detached) }, "detached child survived worker loss")
         } finally { future.cancel(true); executor.shutdownNow() }
     }
 

@@ -33,11 +33,6 @@ class DiskUsageTest {
 
     private fun started(handle: ProcessHandle) = handle.info().startInstant().get().toEpochMilli()
 
-    private fun awaitGone(pid: Long) {
-        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (alive(pid) && System.nanoTime() < until) Thread.sleep(50)
-    }
-
     @Test
     fun `a du that hangs is killed at its timeout with everything it started`() {
         val dir = Files.createTempDirectory("du")
@@ -50,8 +45,7 @@ class DiskUsageTest {
 
         assertTrue(System.nanoTime() - begun < TimeUnit.SECONDS.toNanos(15))
         val pid = child.readText().trim().toLong()
-        awaitGone(pid)
-        assertFalse(alive(pid), "the hanging du's child $pid is still running")
+        assertTrue(eventually(5_000, 50) { !alive(pid) }, "the hanging du's child $pid is still running")
         assertTrue(pids.toFile().listFiles().orEmpty().isEmpty(), "its record is left in $pids")
     }
 
@@ -69,8 +63,7 @@ class DiskUsageTest {
 
         var first: DiskReport? = null
         val running = thread { first = usage.measure() }
-        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-        while (!calls.exists() && System.nanoTime() < until) Thread.sleep(20)
+        assertTrue(eventually { calls.exists() }, "the first measurement did not start")
 
         assertNull(usage.measure(), "a second measurement started while the first ran")
         assertEquals(1, calls.readLines().size)
@@ -98,8 +91,7 @@ class DiskUsageTest {
             val killed = DuRunner.reapLeftovers(pids)
 
             assertEquals(listOf(leftover.pid()), killed)
-            awaitGone(leftover.pid())
-            assertFalse(alive(leftover.pid()))
+            assertTrue(eventually(5_000, 50) { !alive(leftover.pid()) })
             assertTrue(alive(unrecorded.pid()) && alive(ownersAlive.pid()) && alive(reusedPid.pid()))
             assertTrue(pids.resolve(ownersAlive.pid().toString()).exists(), "a live lab process's record was dropped")
         } finally {
@@ -205,8 +197,7 @@ class DiskUsageTest {
         assertNull(usage.measure())
         assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(15))
         val pid = child.readText().trim().toLong()
-        awaitGone(pid)
-        assertFalse(alive(pid), "the cancelled walk's child is still running")
+        assertTrue(eventually(5_000, 50) { !alive(pid) }, "the cancelled walk's child is still running")
         assertEquals(first, usage.latest)
         assertTrue(data.resolve(DuRunner.PID_DIR).toFile().listFiles().orEmpty().isEmpty())
     }
