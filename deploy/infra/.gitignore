@@ -4,4 +4,3 @@
 *.tfplan
 *.tfvars
 !*.tfvars.example
-__pycache__/
