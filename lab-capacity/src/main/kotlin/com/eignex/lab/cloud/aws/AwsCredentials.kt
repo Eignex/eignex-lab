@@ -10,7 +10,9 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /** Credentials that sign AWS requests; [expiration] is null for an access key that does not expire. */
 data class AwsCredentials(val accessKeyId: String, val secretAccessKey: String, val sessionToken: String? = null,
@@ -39,6 +41,8 @@ class AwsEnvironmentCredentials(private val environment: Map<String, String> = S
  */
 class AwsProfileCredentials(private val profile: String, private val environment: Map<String, String> = System.getenv(),
                             private val clock: Clock = Clock.systemUTC(), private val region: String? = null,
+                            /** How long a `credential_process` may run before it is killed and the resolution fails. */
+                            private val processTimeout: Duration = Duration.ofMinutes(1),
                             private val assumeRole: ((AwsCredentials, AssumeRole) -> AwsCredentials)? = null) : () -> AwsCredentials {
     /** What a profile's `role_arn` asks STS for. */
     data class AssumeRole(val roleArn: String, val sessionName: String, val externalId: String?, val durationSeconds: Int?, val region: String?)
@@ -100,14 +104,32 @@ class AwsProfileCredentials(private val profile: String, private val environment
         environment["PATH"]?.let { builder.environment()["PATH"] = it }
         environment["HOME"]?.let { builder.environment()["HOME"] = it }
         val process = builder.start()
-        process.outputStream.close()
-        val output = process.inputStream.readAllBytes().toString(Charsets.UTF_8)
-        check(process.waitFor(1, TimeUnit.MINUTES) && process.exitValue() == 0) { "credential_process of $name failed" }
-        val result = Json.parseToJsonElement(output).jsonObject
-        fun field(name: String) = (result[name] as? JsonPrimitive)?.contentOrNull
-        check(field("Version") == "1") { "credential_process of $name printed an unsupported version" }
-        return AwsCredentials(checkNotNull(field("AccessKeyId")), checkNotNull(field("SecretAccessKey")), field("SessionToken"),
-            field("Expiration")?.let { Instant.from(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(it)) })
+        try {
+            process.outputStream.close()
+            // Read on a thread of its own: a process that never closes its output must still end at the timeout.
+            val read = FutureTask { process.inputStream.readAllBytes() }
+            Thread(read, "credential-process-output").apply { isDaemon = true }.start()
+            val deadline = System.nanoTime() + processTimeout.toNanos()
+            check(process.waitFor(processTimeout.toNanos(), TimeUnit.NANOSECONDS)) {
+                "credential_process of $name did not finish within ${processTimeout.toSeconds()} s"
+            }
+            check(process.exitValue() == 0) { "credential_process of $name failed" }
+            val output = try {
+                read.get((deadline - System.nanoTime()).coerceAtLeast(0), TimeUnit.NANOSECONDS).toString(Charsets.UTF_8)
+            } catch (_: TimeoutException) {
+                error("credential_process of $name left its output open")
+            }
+            val result = Json.parseToJsonElement(output).jsonObject
+            fun field(name: String) = (result[name] as? JsonPrimitive)?.contentOrNull
+            check(field("Version") == "1") { "credential_process of $name printed an unsupported version" }
+            return AwsCredentials(checkNotNull(field("AccessKeyId")), checkNotNull(field("SecretAccessKey")), field("SessionToken"),
+                field("Expiration")?.let { Instant.from(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(it)) })
+        } finally {
+            if (process.isAlive) {
+                process.descendants().forEach { it.destroyForcibly() }
+                process.destroyForcibly()
+            }
+        }
     }
 
     private fun stsAssumeRole(source: AwsCredentials, request: AssumeRole): AwsCredentials {
