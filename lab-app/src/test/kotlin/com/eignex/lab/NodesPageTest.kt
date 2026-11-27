@@ -87,6 +87,8 @@ class NodesPageTest {
         assertContains(page, "Capacity has not reported")
         assertContains(page, "id=\"node-request\"")
         assertContains(page, "value=\"arm\"")
+        assertContains(page, "<label for=\"node-count\">Minimum nodes in pool<input")
+        assertContains(page, "<label for=\"node-duration\">Keep for<select")
         val response = client.post("/capacity/leases") {
             contentType(ContentType.Application.Json)
             setBody("""{"pool":"arm","nodes":2,"ttlSec":900}""")
