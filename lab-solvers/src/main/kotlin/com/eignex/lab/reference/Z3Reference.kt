@@ -20,8 +20,6 @@ object Z3Reference {
     private val resourceJson = Json { encodeDefaults = true }
     private val options = listOf("-model", "sat.threads=1", "parallel.enable=false", "pp.decimal=false")
 
-    fun available(): Boolean = runCatching { NativeReference.available(binary.path) }.getOrDefault(false)
-
     private val build by lazy { ReferenceIdentity.native(binary.path, EXIT_WAIT_MS).stats.getValue("referenceVersion") }
 
     fun identity(): String = "$build|memoryMb=$memoryMb|${options.joinToString(",")}|$POLICY"

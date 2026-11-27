@@ -21,23 +21,7 @@ object MiniZincReference {
     private const val MODEL_OBJECTIVE_KEY = "_objective"
     private const val STAT_PREFIX = "%%%mzn-stat:"
     private const val GRACE_MS = 30_000L
-    private const val REGISTRY_WAIT_MS = 10_000L
     private const val STDERR_CAP = 2000
-
-    /** The solver ids `minizinc --solvers` lists, lowercased. */
-    private val registered: Set<String> by lazy {
-        runCatching {
-            val proc = ProcessBuilder("minizinc", "--solvers").redirectErrorStream(true).start()
-            val out = proc.inputStream.bufferedReader().readText()
-            proc.waitFor(REGISTRY_WAIT_MS, TimeUnit.MILLISECONDS)
-            Regex("""\(([^)]*)\)""").findAll(out)
-                .flatMap { it.groupValues[1].split(',') }
-                .map { it.trim().lowercase() }
-                .toSet()
-        }.getOrElse { emptySet() }
-    }
-
-    fun available(solver: String): Boolean = solver.lowercase() in registered
 
     fun command(instance: Instance, solver: String, budget: Budget, processors: Int, free: Boolean): List<String> {
         val (optimize, _) = solveKind(instance)
