@@ -55,13 +55,7 @@ class QueueEfficiencyTest {
 
     @Test fun `cache volumes are created only once on eligible worker nodes`() {
         val created = mutableListOf<JsonObject>()
-        val control = object : NomadControl {
-            override fun job(id: String): JsonObject? = null
-            override fun submit(job: JsonObject) = Unit
-            override fun stop(id: String) = Unit
-            override fun allocations(job: String) = emptyList<NomadAllocation>()
-            override fun allocation(id: String): NomadAllocation? = null
-            override fun jwks() = buildJsonObject {}
+        val control = object : RecordingNomad() {
             override fun nodes() = listOf(
                 buildJsonObject { put("ID", "ready"); put("NodeClass", "cloud"); put("Status", "ready") },
                 buildJsonObject { put("ID", "down"); put("NodeClass", "cloud"); put("Status", "down") },

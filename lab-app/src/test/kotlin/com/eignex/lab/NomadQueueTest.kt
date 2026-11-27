@@ -773,7 +773,7 @@ class NomadQueueTest {
             putJsonObject("Attributes") { put("kernel.name", "linux"); put("cpu.usablecompute", "8000"); put("cpu.numcores", "8") }
             putJsonObject("NodeResources") { putJsonObject("Memory") { put("MemoryMB", 16384) } }
         }
-        control.placed["busy"] = listOf(buildJsonObject {
+        control.nodeTasks["busy"] = listOf(buildJsonObject {
             put("ClientStatus", "running")
             putJsonObject("AllocatedResources") { putJsonObject("Tasks") { putJsonObject("worker") {
                 putJsonObject("Cpu") { put("CpuShares", 5000) }; putJsonObject("Memory") { put("MemoryMB", 4096) }
@@ -795,20 +795,7 @@ class NomadQueueTest {
     private val root = Files.createTempDirectory("nomad-queue")
     private val store = Store(root.resolve("lab.db"))
     private val artifacts = LocalArtifactStore(root.resolve("artifacts"))
-    private val control = object : NomadControl {
-        val jobs = mutableMapOf<String, JsonObject>()
-        val nodeInventory = mutableMapOf<String, JsonObject>()
-        val placed = mutableMapOf<String, List<JsonObject>>()
-        override fun nodes() = nodeInventory.values.toList()
-        override fun node(id: String) = nodeInventory[id]
-        override fun nodeAllocations(id: String) = placed[id].orEmpty()
-        override fun job(id: String) = jobs[id]
-        override fun submit(job: JsonObject) { jobs[job.getValue("ID").jsonPrimitive.content] = job }
-        override fun stop(id: String) { jobs.remove(id) }
-        override fun allocations(job: String) = emptyList<NomadAllocation>()
-        override fun allocation(id: String): NomadAllocation? = null
-        override fun jwks() = buildJsonObject { putJsonArray("keys") {} }
-    }
+    private val control = RecordingNomad()
     private var solveAdmissionAllowed = true
     private val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, solveAllowed = { solveAdmissionAllowed })
     private fun target(platform: NomadPlatform, name: String, market: CapacityMarket = CapacityMarket.SPOT): NomadQueueTarget {
@@ -965,7 +952,7 @@ class NomadQueueTest {
     }
 
     @Test fun `operator example decodes into pinned native and Spot worker templates`() {
-        val example = Json.decodeFromString<NomadQueueSettings>(Files.readString(Path.of(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json")))
+        val example = Json.decodeFromString<NomadQueueSettings>(Files.readString(repositoryFile("deploy/nomad/queue.example.json")))
         assertEquals(setOf("mac", "linux"), example.targets.map { it.os }.toSet())
         assertEquals(CapacityMarket.SPOT, example.targets.single { it.os == "linux" }.market)
         example.targets.forEach { it.template.render() }

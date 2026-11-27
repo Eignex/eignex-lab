@@ -19,7 +19,6 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
-import com.eignex.lab.execution.CaseChecks
 
 /** Explicit local release gate: requires built consumer checkouts, never resolves or publishes a release. */
 @Tag("bench-adapters")
@@ -63,15 +62,7 @@ class BenchAdapterIntegrationTest {
         Files.createDirectories(root)
         val store = Store(root.resolve("lab.db"))
         val artifacts = LocalArtifactStore(root.resolve("objects"))
-        val jobs = mutableMapOf<String, JsonObject>()
-        val control = object : NomadControl {
-            override fun job(id: String) = jobs[id]
-            override fun submit(job: JsonObject) { jobs[job.getValue("ID").jsonPrimitive.content] = job }
-            override fun stop(id: String) { jobs.remove(id) }
-            override fun allocations(job: String) = emptyList<NomadAllocation>()
-            override fun allocation(id: String): NomadAllocation? = null
-            override fun jwks() = buildJsonObject { putJsonArray("keys") {} }
-        }
+        val control = RecordingNomad()
         val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), corpusDir = root.resolve("checker-corpus"), auth = Auth.Disabled)
         val checks = CaseChecks(store, { Checkers.of(config.paths) }) { id, line -> println("check $id: $line") }
         val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, checkCase = { id, index ->
