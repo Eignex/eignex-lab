@@ -53,10 +53,16 @@ window.addEventListener('hashchange', function () { openOnHash(location.hash); }
 openOnHash(location.hash);
 async function act(path, body, ask) {
   if (ask && !confirm(ask)) return;
-  const response = await fetch(path, body
-    ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}
-    : {method: 'POST'});
-  if (!response.ok) alert(await response.text());
+  try {
+    const response = await fetch(path, body
+      ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}
+      : {method: 'POST'});
+    if (!response.ok) alert(await response.text());
+  } catch (error) {
+    // A request that never reached the server changed nothing; a reload would hide why.
+    alert(error.message);
+    return;
+  }
   location.reload();
 }
 let timer = null;
