@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by install.sh, update.sh and proxy/install-proxy.sh. The services run releases/current, a copy of a build
 # that nothing rewrites: a rebuild changes the jars a running JVM still loads classes from, and breaks it until it restarts.
 
@@ -19,6 +20,7 @@ release() {
     echo "$releases/current/bin/eignex-lab"
     return 0
   fi
+  # shellcheck disable=SC2012 # release names are commit-timestamp words
   for old in $(ls -1dt "$releases"/*/ | sed 's:/$::' | grep -v '/current$' | tail -n +4); do
     [[ "$(basename "$old")" == "$id" ]] || rm -rf "$old"
   done
@@ -34,6 +36,7 @@ restart_services() {
     # -a: BSD pgrep leaves out its own ancestors, and the runner is one when its self-update runs this. The optional cli.
     # package also matches services still running a release from before the layered packages.
     pids="$(pgrep -af 'com\.eignex\.lab\.(cli\.)?MainKt (api|runner|nomad-coordinator)( |$)' || true)"
+    # shellcheck disable=SC2086 # one PID per word
     if [[ -n "$pids" ]]; then kill $pids; fi
     ;;
   Linux)
