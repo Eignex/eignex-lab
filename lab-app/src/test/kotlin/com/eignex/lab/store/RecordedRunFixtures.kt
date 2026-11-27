@@ -9,6 +9,15 @@ import kotlinx.serialization.json.Json
 
 /* Fixtures that write past runs straight into a store; production records cases through [ExecutionStore]. */
 
+/** Start the first queued job for record and history tests; no submitted command is executed. */
+internal fun Store.startForTest(): Job? {
+    val id = queue().firstOrNull() ?: return null
+    executionTransaction { db ->
+        db.sqlUpdate("UPDATE jobs SET status = 'RUNNING', local = 1, started_at = ?, running_since = ? WHERE id = ?", now(), now(), id)
+    }
+    return job(id)
+}
+
 /** Keep the native solver stdout files case [index] of [jobId] left ([CaseResult.stdout]), replacing any earlier ones. */
 internal fun Store.caseStdout(jobId: Long, index: Int, files: List<CaseFile>): Int = executionTransaction {
     it.sqlUpdate("UPDATE cases SET stdout = ? WHERE job_id = ? AND idx = ?",
