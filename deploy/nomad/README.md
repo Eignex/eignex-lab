@@ -46,9 +46,8 @@ and measured aggregate CPU use. It also submits a memory-exhaustion task and can
 These are synthetic execution probes, not real solver builds or JFR measurements. Results go to
 `build/nomad-prototype/verification.json`; all probe jobs are deregistered, including on failure.
 
-The base and probe images are pinned in `versions.json`, along with Nomad 2.0.7 and the planned Autoscaler 0.6.0.
-The autoscaler is not installed or started by this slice. The agent image adds only the utilities Nomad needs for
-node fingerprinting. Node CPU and memory are otherwise detected normally; the prototype reserves 500 MHz and 256 MiB
+The base and probe images are pinned in `versions.json`, along with Nomad 2.0.7 and Autoscaler 0.6.0. The sandbox
+does not run the Autoscaler. The agent image adds only the utilities Nomad needs for node fingerprinting. Node CPU and memory are otherwise detected normally; the prototype reserves 500 MHz and 256 MiB
 for its host. It does not request whole-node exclusivity.
 
 Use `sandbox.sh cli node status` or `sandbox.sh cli job status <id>` to inspect the isolated cluster. The script
@@ -69,9 +68,6 @@ bash deploy/nomad/sandbox.sh stop
 The Mac starts the native Nomad agent as the current user, with the same loopback TLS/ACL configuration and no Linux
 VM. The probe runs native bash processes and saves `native-verification.json`. Its CPU/memory settings are
 scheduling budgets, not hard quotas. Native execution still needs the host's usual tooling and permissions.
-
-Synthetic probes complement real native solver/JFR runs and live Spot acceptance. They exercise isolated service
-failure and replacement without changing production jobs. Consult the migration status for production evidence.
 
 ## Render a session
 
@@ -95,8 +91,8 @@ bash deploy/nomad/sandbox.sh cli job run -json job.json
 ```
 
 For `platform: "mac"`, omit `image`, use `nodeClass: "lab-prototype-mac"`, and provide a native executable and args.
-The command is operator supplied for the prototype; it is not a public endpoint for accepting arbitrary commands
-from experiment submissions. Real workers will receive trusted versioned work manifests from the coordinator.
+This is an operator tool, not an endpoint for arbitrary commands; real workers receive versioned work manifests
+from the coordinator.
 
 ## Portable worker and native supervisor
 
@@ -120,7 +116,7 @@ code, which Java cannot do itself.
 The offline acceptance command is `eignex-lab worker-local manifest.json ROOT SOCKET LAB_LAUNCHER`. Put the approved
 ZIP inputs at `ROOT/inputs/<sha256>.zip`. It runs complete paired iterations without opening SQLite or loading
 provider configuration and writes `ROOT/results.json`. Its bounded 70-second offline lease is for acceptance probes;
-connected workers use coordinator renewals. Real Mac solver/JFR acceptance remains separate from the fixture tests.
+connected workers use coordinator renewals.
 
 Build a portable worker image with `./gradlew installDist` and
 `docker build -f deploy/nomad/worker.Dockerfile --build-arg WORKER_RELEASE=$(git rev-parse HEAD) -t REGISTRY/lab-worker:RELEASE .`.
@@ -155,11 +151,9 @@ The worker listener defaults to loopback, separately from the operator API. A no
 `privateNetwork=true` and an authenticated encrypted private route, or an HTTPS proxy terminating on loopback.
 HTTP workers outside loopback must explicitly set `LAB_WORKER_PRIVATE_TRANSPORT=true` for that private route.
 
-Session admission is automatic when the Nomad backend and queue settings are enabled.
-`NomadBackend.enqueue` validates the manifest against the stored experiment, arm commits and case plan, then
-persists the session, credential hash, manifest and Nomad submission intent together. Native/cloud preparation and
-normal queue admission use this protocol. Do not manually edit a running job's
-backend column. Production submissions select Nomad through the explicit backend setting.
+Session admission is automatic once queue settings are configured. `NomadBackend.enqueue` validates the manifest
+against the stored experiment, arm commits and case plan, then persists the session, credential hash, manifest and
+Nomad submission intent together. Native/cloud preparation and normal queue admission use this protocol.
 
 Every `/worker/v1/sessions/<id>/` request carries its scoped session token, allocation ID and a signed Nomad workload
 identity. Named identities have audience `eignex-lab-worker` and a ten-minute lifetime. Their renewable file lives at
@@ -243,7 +237,7 @@ limits, and waits when matching Spot capacity is unavailable. Loss events remain
 allowance. Nomad task restarts remain disabled and its reschedule/disconnect policy is explicit.
 Unregistered sessions that are paused or draining are fenced and stopped without waiting for an allocation
 or worker exit. Registration and retirement serialize, so bound workers finish their owned paired rows;
-retired pending reservations no longer block replacement admission or retain autoscaling demand.
+retired pending reservations do not block replacement admission or retain autoscaling demand.
 Ordinary solver exits/timeouts remain case outcomes. Linux workers refuse missing or mismatched runtime hard limits;
 native workers report advisory enforcement. Resource counters are retained under each job's `nomad/` files.
 
@@ -276,8 +270,8 @@ On the Mac, `bash deploy/nomad/native-services.sh --init-runtime "$LAB_DATA/noma
 the checksum-pinned native binary and initializes CA/server/client/CLI certificates. Set up the coordinator's PKCS12
 stores from those CLI credentials and CA. Render without
 registering anything using `--config native-services.json --output /temporary/review-directory`; review the plists,
-then run `--config native-services.json --install`. Setting `LAB_NOMAD_NATIVE_CONFIG` in `lab.env` integrates this
-with `deploy/install.sh`, including its dry run. This does not opt normal submissions in to Nomad.
+then run `--config native-services.json --install`. Setting `LAB_NOMAD_NATIVE_CONFIG` in `lab.env` makes
+`deploy/install.sh` (and its `LAB_INSTALL_DRY_RUN=1` dry run) run the same step.
 
 When job files or the shared worker cache live on an external disk, grant macOS Full Disk Access to the lab's Java
 executable (`javaHome`), which runs both the coordinator and the supervisor; inspect the `tccd` attribution if access
@@ -302,12 +296,11 @@ A missing or damaged supervisor holds native execution rather than granting unch
 Native sessions drain for a pause or an update; priority orders admission without making an otherwise idle host exclusive. The runner takes the lock
 before updating or executing local work; remote Linux allocations continue. Ordinary updates restart only the
 API/runner/coordinator. They leave the Nomad agents and supervisor running. Changing those services requires the
-explicit `--restart-agents` maintenance option after draining native work. In-flight workers must use immutable
-release paths. Release pruning is disabled after native Nomad service installation; remove old worker releases only
-after reconciliation proves no allocation or process uses them. Keep server snapshots and manifests needed for rollback.
-
-Managed service/ownership tests complement live solver acceptance. Experiment execution now uses Nomad exclusively;
-the maintenance runner retains capture analysis, reference checking, schedules and confirmations.
+explicit `native-services.sh --install --restart-agents` maintenance option after draining native work. In-flight
+workers must use immutable release paths, so `deploy/release.sh` stops pruning old releases once Nomad is configured.
+Remove them only with `prune-runtime.sh` (see
+[setup](../SETUP.md#runtime-pruning)), which keeps every release a process, service or job still uses. Keep server
+snapshots and manifests needed for rollback.
 
 ## Provider-neutral capacity and operations
 
@@ -318,8 +311,7 @@ Every session budget includes its helpers. The policy packs free CPU and memory 
 nodes, preserves per-experiment/per-host parallel caps, and reuses warm capacity for lower-priority eligible work.
 Only old empty nodes contribute to voluntary scale-in: empty for a pool's `idleMs` (default 300000), or for its optional
 `idleUnqueuedMs` (at most `idleMs`) while no active job could use the pool at all: every one is paused, cancelled,
-local-only, or its tags or market rule the pool out. Unset, `idleMs` applies throughout. Deploy the coordinator before
-setting it: an older one refuses the unknown field. Terminating machines still consume quota until gone, without
+local-only, or its tags or market rule the pool out. Unset, `idleMs` applies throughout. Terminating machines still consume quota until gone, without
 restoring an obsolete provider target count. CPU budgets are logical vCPUs, separately from Nomad's MHz conversion.
 
 Set the coordinator's optional `capacity` object to `{"settingsFile":"/private/capacity.json",
@@ -384,17 +376,14 @@ Provision the on-demand counterparts before enabling the mapping. `deploy/nomad/
 AWS_ADAPTER AUTOSCALER FLEET_OUTPUT OUTPUT` stages all four private settings files from `tofu output -json pools` of a
 fallback fleet; review them before installation. Deploy the updated renewal functions, coordinator and AWS adapter,
 then install the settings and render the Autoscaler policies with `autoscaler.sh`. Keep pinned worker runtimes unchanged.
-The old Python inventory adapter does not publish the structured shortage signal and must be migrated to the maintained
-`eignex-lab capacity-adapter aws CONFIG` service. Verify a bounded manual request reaches an on-demand node after an
-injected shortage in an isolated inventory, then restore the real inventory, release the lease and verify idle retirement.
-The maintained adapter batches group inventory, omits scaling-activity queries for idle groups, and skips Lambda renewal
+Verify a bounded manual request reaches an on-demand node after an injected shortage in an isolated inventory, then
+restore the real inventory, release the lease and verify idle retirement.
+The `eignex-lab capacity-adapter aws CONFIG` service batches group inventory, omits scaling-activity queries for idle groups, and skips Lambda renewal
 only when a fresh, verified zero-demand grant and fresh provider inventory both show no instances or pending launches.
 Dormant fallback pools therefore do not multiply Auto Scaling calls or keep their capacity leases open. Active pools and
 unfilled launch targets still renew independently; a cached shortage retains its original timestamp across adapter restarts.
 
-Provider-side capacity expiry, private-network bootstrap and real AWS/GCP Spot canaries follow in the infrastructure
-stack. The collector/packing tests alone do not establish live provisioning, quota handling or billing expiry.
-
+Provider-side capacity expiry, bootstrap and live gates are in the [provider modules](../infra/README.md).
 
 ## Source builds inside worker budgets
 
@@ -460,7 +449,7 @@ Preparation also opts into the consumer's shared corpus cache while retaining an
 portable artifacts. The consumer owns fetching, locking and publishing complete collections. Native execution
 keeps the user's normal cache home; Linux workers use `XDG_CACHE_HOME` under `/lab-cache/consumer` unless explicitly
 configured. This reuses collections between allocations on a node; Spot termination still discards that node's
-local cache. Older pinned consumers that do not recognize the shared-cache property keep their previous behavior.
+local cache.
 
 For direct regional input reuse, configure `LAB_SHARED_INPUT_ROOT` and `LAB_SHARED_INPUT_URL` on preparation,
 solve workers and the coordinator. The root is a persistent local input cache; the HTTPS URL is the regional
@@ -508,14 +497,13 @@ Updated workers use process exit `70` (`EX_SOFTWARE`) for unhandled software fai
 explicit temporary dependency failure or cancellation; a fenced worker exits successfully. After three positively
 observed unsignalled software exits at the same preparation stage and worker release, without accepted preparation,
 the job fails with the exit, stage and release recorded. Nomad kill/eviction, lost nodes, lease expiry, signals,
-OOM, missing task evidence and legacy ambiguous exit `1` remain infrastructure recovery. Manual job retry resets
-both counters and retains accepted results. Worker images/native launchers must be updated for generic crash
-protection; recipe and selection protection also applies to older workers through the coordinator alone.
+OOM, missing task evidence and ambiguous exit `1` remain infrastructure recovery. Manual job retry resets
+both counters and retains accepted results.
 
 Targeted tests exercise real Git bundle export/checkout, trust rejection, build reuse/corruption recovery, helper
-budgets and fenced failures. The connected Nomad test now builds its fixture from source in the Docker allocation,
+budgets and fenced failures. The connected Nomad test builds its fixture from source in the Docker allocation,
 then exercises coordinator restart and forced allocation loss after arm A. Native macOS CI runs the same source
-build and independent-supervisor contracts. Real solver/JFR canaries and provider Spot gates remain outstanding.
+build and independent-supervisor contracts.
 
 ## Logs and execution reporting
 
@@ -540,8 +528,7 @@ lease heartbeat. Provisional logs remain visible in Files for diagnosis until no
 Tests cover duplicate/mismatched chunks, size limits, authentication, stale ownership, accepted-file separation,
 and durable event reconstruction without recreating trimmed jobs. The real connected test additionally requires
 output to be visible before acceptance and the final log to report `DONE`, across coordinator restart and forced
-allocation loss. These are canary reporting checks; automatic queue planning/admission and live rollout gates remain
-open as documented in the migration plan.
+allocation loss.
 
 ### Allocation-scoped preparation
 
@@ -549,9 +536,8 @@ Committed bench manifests may opt into independent preparation capabilities and 
 through the `preparation` contract documented in [`lab-bench`](../../lab-bench/README.md#paired-runs-and-runtime-declarations).
 Worker protocol 6 freezes that contract. Admission and autoscaling use its host selector for preparation while preserving
 the job's location and purchasing policy; solves use the accepted output platform and their original selectors. Manifests
-without this declaration retain the existing shared preparation/execution constraints. Cross-build recipes must themselves
+without this declaration share one constraint for preparation and execution. Cross-build recipes must themselves
 produce the declared architecture; changing placement never converts a host binary into a target binary.
-
 
 A preparation manifest sets `preparationTimeoutSec` and has no cases. The worker uses its existing allocation
 identity, renewable attempt lease, process supervisor and CPU/memory reservation to build approved source inputs,
@@ -567,8 +553,7 @@ Capacity collection accounts for queued preparation as build demand under the sa
 ### Automatic preparation and admission
 
 Set `LAB_NOMAD_QUEUE_SETTINGS` to an absolute JSON settings file based on [queue.example.json](queue.example.json)
-in the API, runner and coordinator environments. Nomad is the only experiment executor. Analysis/recheck jobs
-run through the local maintenance runner; ordinary submissions, scheduled experiments and confirmations use Nomad.
+in the API, runner and coordinator environments.
 
 Replace the example's release, immutable launcher/image, node classes, datacenter, private API address and fingerprinted
 `cpu.usablecompute`/logical CPU values. Declare the native target's usable CPU/memory ceiling and cloud targets within
@@ -608,13 +593,13 @@ to roll back past it, stop every solve session, then with the controller down ru
 `DROP INDEX active_session_claim; CREATE UNIQUE INDEX active_session_iteration ON iteration_attempts (session_id) WHERE state IN ('claimed', 'preparing', 'executing', 'uploading'); PRAGMA user_version = 21;`
 (the extra column is harmless to it).
 
-Runtime pruning is documented in [setup](../SETUP.md#retiring-old-installations). Keep active worker releases
+Runtime pruning is documented in [setup](../SETUP.md#runtime-pruning). Keep active worker releases
 immutable and retain frozen retry recipes. Reconciliation delivers cancellation and stop intents before allocation
 state is considered disposable; historical job results and provenance are never runtime-pruning candidates.
 
-Job `vcpus` (formerly `parallel`) is the width of each of its solve sessions. Each worker session reserves the job's
+Job `vcpus` is the width of each of its solve sessions. Each worker session reserves the job's
 vCPUs, or the most its target offers, and runs `max(1, vcpus - 1)` cases at once divided by the largest case's CPUs,
-claiming whole paired rows to fill them; a target template's `parallel` no longer limits that. While rows wait, the
+claiming whole paired rows to fill them; a target template's `parallel` does not limit that. While rows wait, the
 queue adds sessions of that width until all of the job's solve sessions together reach the operator's `maxVcpusPerJob`
 (default 16), so a job spreads over several nodes; `maxSessionsPerJob` and the pending rows bound the count too. On the
 native worker, one machine, a job's sessions together hold at most its vCPUs, and each runs at most `LAB_MAX_PARALLEL`
@@ -622,13 +607,12 @@ cases. Preparation reserves the job's vCPUs too, at most `maxVcpusPerJob`, at le
 scaled from it, within the target's budget and the local cores. A cloud preparation grows further into what one
 running node of its target leaves idle (the coordinator's ten-second node sample, less every unregistered session of
 that class): at most the node's logical CPUs divided by `maxConcurrentBuildsPerNode`, the target's budget and
-`maxVcpusPerJob`, in whole vCPUs with memory in `preparationBudget`'s proportion. Workers already size Gradle workers
-and heap from the manifest budget, so this needs no worker rollout. Sessions from the same experiment share a node
-whenever those resources fit. `perHostParallel` optionally caps same-job cases on each node and is unset by
-default. These live limits apply independently of frozen experiment sources and
-prepared inputs. A worker larger than the job ceiling is admitted once so existing
-large requests remain runnable. Existing workers affected by a sharing-policy
-change finish their current iteration before retiring.
+`maxVcpusPerJob`, in whole vCPUs with memory in `preparationBudget`'s proportion. Workers size Gradle workers and heap
+from the manifest budget. Sessions from the same experiment share a node whenever those resources fit.
+`perHostParallel` optionally caps same-job cases on each node and is unset by default. These live limits apply
+independently of frozen experiment sources and prepared inputs. A worker larger than the job ceiling is admitted
+once so large requests remain runnable. Workers affected by a sharing-policy change finish their current iteration
+before retiring.
 
 A session holds only as many cases as its target's memory fits at `caseMemoryMiB` each, and reserves only their CPUs
 and the worker's one. The coordinator logs at startup each cloud target whose memory holds fewer cases than a session
@@ -661,12 +645,14 @@ immutable. Releases not listed retain their existing worker runtime.
 
 ### Warm worker I/O
 
+Cache observations and the full-size preparation regression are described in
+[PREPARATION-PERFORMANCE.md](PREPARATION-PERFORMANCE.md).
+
 Preparation runs only the requested runtime build tasks. The worker init script excludes every Gradle
 `AbstractTestTask` before dependency graph resolution, including custom and subproject test tasks, so their
 test compilation and fixture dependencies are omitted too. JVM CLI preparations also disable native release packaging.
 Build and Gradle dependency cache identities use the actual toolchain, recipe, platform and JVM rather than the worker
-release. Historical `jdk25:<release SHA>` bundles normalize to `jdk25`; explicit custom toolchains remain distinct.
-This switches historical cache keys once; later worker patches preserve the new warm entries.
+release, so worker patches keep warm entries; explicit custom toolchains remain distinct.
 
 Workers reuse verified input distributions across allocations under `LAB_WORKER_CACHE_ROOT/inputs`. The node-local
 cache keeps an 8 GiB soft limit and seven-day expiry; process-owned pins protect readers during staging and compilation.
@@ -674,8 +660,7 @@ Cold preparation seeds its published distribution from the verified private sour
 available, instead of decompressing and rewriting the ZIP it just created. The source inventory is checked against the
 published bundle before promotion; readers still receive private copies and the existing cache size limit applies.
 Prepared ZIPs use buffered output and fast compression for source text, while already compressed JARs, Git packs and
-other compressed formats use uncompressed DEFLATE framing to avoid repeated compression. The archive-v2 identity
-makes this a one-time ZIP cache miss without invalidating the build cache. Discarded compiler directories are pruned
+other compressed formats use uncompressed DEFLATE framing to avoid repeated compression. Discarded compiler directories are pruned
 before traversal. Cold publication logs inventory time, ZIP writing time, input bytes and compressed bytes separately;
 cache observations include ZIP verification and lock wait time, so slow cold reads can be separated from reuse.
 A separate node cache under `LAB_WORKER_CACHE_ROOT/archives` reuses the complete ZIP when verified file checksums,
@@ -685,8 +670,7 @@ Metadata receipts avoid rehashing unchanged private files, while changed inputs,
 corrupt ZIPs invalidate reuse. Custom recipes retain their complete inventory. Uploads opt into cross-job reuse: the coordinator checks an
 existing archive's SHA-256, then durably links the immutable artifact into the requesting job without transferring it again.
 A disposable index has a 4096-hint soft limit with seven-day expiry (pruned on publication, at most once per minute);
-it retains no archive data itself. Missing, expired, deleted or corrupt sources fall back to resumable uploads. Old
-coordinators ignore this optional request flag and retain the original upload protocol.
+it retains no archive data itself. Missing, expired, deleted or corrupt sources fall back to resumable uploads.
 Each worker session receives a private copy, using filesystem clones where supported, and cannot modify the cached distribution.
 Within one serial worker session, unchanged private workspaces are reused between iterations. Each reuse verifies a sealed
 inventory including installed measurement launchers and provenance captured for that stable private path. Generated outputs
