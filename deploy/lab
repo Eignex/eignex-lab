@@ -21,7 +21,8 @@
 #                                                            SIGTERM, then SIGKILL 30 s later, so it should write results
 #                                                            as it goes or flush them on shutdown
 # Submission options: --tags 'arch:x86_64,simd:avx2,!spot' requires tags and excludes !tags; repeat or comma-separate.
-# --measurement none|resources|jfr|compilation|compilation+log selects an experiment's CLI recording.
+# --measurement none|resources|jfr|compilation|compilation+log selects an experiment's CLI recording; bench jobs
+# refuse those CLI recordings and take none or native-startup, which only a repository bench accepts.
 #   lab analyze <id>                                        queue an analysis job: the lab's compilation analyser rerun over the
 #                                                            retained captures of an ended JFR-recorded job <id>, writing each case's
 #                                                            compilation-report.json afresh; no build, no solver, no consumer code.
