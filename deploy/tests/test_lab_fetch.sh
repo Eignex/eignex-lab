@@ -39,8 +39,13 @@ mode="$FAKE_MODE"
 body="" status=200 code=0
 if [[ "$path" == */hold ]]; then
   body='{"id":"ab12"}'
+  # The renewal modes answer only the first hold request, or give a replacement hold.
+  if (( $(grep -c '^POST /jobs/1/hold$' "$FAKE_CALLS") > 1 )); then
+    [[ "$mode" == hold-replaced ]] && body='{"id":"cd34"}'
+    [[ "$mode" == hold-lost ]] && body="" code=22
+  fi
 elif [[ "$path" == */hold/* ]]; then
-  :
+  [[ "$method" != POST || ! "$mode" =~ ^hold-(replaced|lost)$ ]] || code=22
 elif [[ "$path" == */files ]]; then
   wait="$(sed -n 's/.*waitSec=\([0-9]*\).*/\1/p' <<< "$query")"
   echo "$wait $timeout" >> "$(dirname "$FAKE_CALLS")/inventory-options"
@@ -106,6 +111,23 @@ test_loading_inventory_is_retried_before_fetching_the_complete_array() {
   equal 3 "$(grep -c '^GET /jobs/1/files$' "$root/calls")" "inventory requests"
   equal complete "$(cat "$dest/preparation/archive.zip")" "archive"
   released
+}
+
+test_a_hold_that_cannot_be_renewed_is_replaced_and_the_replacement_released() {
+  setup
+  fetch hold-replaced LAB_FETCH_RENEW_SEC=0
+  succeeds $? "fetch"
+  equal complete "$(cat "$dest/preparation/archive.zip")" "archive"
+  check "releases the replacement hold" grep -qxF "DELETE /jobs/1/hold/cd34" "$root/calls"
+}
+
+test_a_lost_hold_stops_the_download_and_never_releases_a_missing_id() {
+  setup
+  fetch hold-lost LAB_FETCH_RENEW_SEC=0
+  fails $? "fetch"
+  check "explains" grep -q "could not renew or replace the hold" "$root/err"
+  check "downloads nothing unheld" test ! -e "$dest/preparation/archive.zip"
+  equal "DELETE /jobs/1/hold/ab12" "$(grep '^DELETE' "$root/calls")" "releases only the hold it had"
 }
 
 test_unavailable_inventory_has_a_bounded_retry_and_never_claims_empty_success() {

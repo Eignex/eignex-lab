@@ -436,6 +436,8 @@ fetch)
     fi
     rm -rf "$probe"
   fi
+  # Every ten minutes; LAB_FETCH_RENEW_SEC (tests only) sets another interval.
+  renew_sec="${LAB_FETCH_RENEW_SEC:-600}"; [[ "$renew_sec" =~ ^[0-9]+$ ]] || renew_sec=600
   renewed=$SECONDS
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
@@ -445,10 +447,13 @@ fetch)
     case "$path" in ''|/*|*/|*//*|*\\*|.|..|./*|../*|*/./*|*/../*|*/.|*/..) echo 'lab fetch: unsafe listed path' >&2; exit 1;; esac
     [[ "$bytes" =~ ^-?[0-9]+$ && ( -z "$sha" || "$sha" =~ ^[0-9a-f]{64}$ ) ]] ||
       { echo 'lab fetch: invalid file metadata' >&2; exit 1; }
-    if (( SECONDS - renewed > 600 )); then
-      curl -fsS -o /dev/null -X POST "$url/jobs/$id/hold/$hold" ||
-        hold=$(curl -fsS -X POST "$url/jobs/$id/hold" | jq -r .id) ||
-        echo "lab fetch: could not renew the hold on job $id" >&2
+    if (( SECONDS - renewed >= renew_sec )); then
+      # A hold that can be neither renewed nor replaced leaves the files to the disk trim: stop rather than go on unheld.
+      if ! curl -fsS -o /dev/null -X POST "$url/jobs/$id/hold/$hold"; then
+        renewal=$(curl -fsS -X POST "$url/jobs/$id/hold" | jq -r .id) && [[ "$renewal" =~ ^[0-9a-f]+$ ]] ||
+          { echo "lab fetch: could not renew or replace the hold on job $id's files; the download stopped" >&2; exit 1; }
+        hold="$renewal"
+      fi
       renewed=$SECONDS
     fi
     got=""
