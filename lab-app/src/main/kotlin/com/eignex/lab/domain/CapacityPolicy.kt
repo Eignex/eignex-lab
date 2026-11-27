@@ -142,6 +142,16 @@ object CapacityPolicy {
                 (d.perHostParallel == null || b.allocations.filter { it.job == d.job }.sumOf { it.caseParallel.toLong() } + d.caseParallel <= d.perHostParallel) &&
                 (d.maxConcurrentBuildsPerNode == null || b.allocations.count { it.work == CapacityWork.BUILD } < d.maxConcurrentBuildsPerNode)
         }
+        // Best fit: ready nodes before booting ones, then the one [d] leaves the least CPU free on. It fills partial nodes
+        // across experiments.
+        fun bestFit(d: CapacityDemand): Bin? = bins.filter { fits(d, it) }.minWithOrNull(compareBy<Bin> { it.node.state != CapacityNodeState.READY }
+            .thenBy { pools.getValue(it.node.pool).cpuMillis.toLong() - it.allocations.sumOf { a -> a.budget.cpuMillis.toLong() } }
+            .thenBy { it.node.id })
+        fun place(d: CapacityDemand, bin: Bin) {
+            bin.allocations += CapacityReservation(d.id, d.job, d.budget, d.work)
+            placements += CapacityPlacement(d.id, bin.node.id, bin.node.pool, bin.node.state == CapacityNodeState.READY)
+        }
+        fun grow(p: CapacityPool) { counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus }
         // Nodes an earlier decision added that the provider does not list yet: the autoscaler and the provider's inventory
         // each take a few seconds to see a new size, and a decision that dropped them meanwhile would withdraw its own
         // growth before anything read it. Within the cooldown they are held as booting; unused ones are withdrawn below.
@@ -150,7 +160,7 @@ object CapacityPolicy {
             if (p.id in growthBlocked || at - increased >= p.cooldownMs) continue
             while (counts.getValue(p.id) < minOf(launched[p.id] ?: 0, p.maxNodes) && quota >= p.vcpus) {
                 bins += Bin(CapacityNode("launch:${p.id}:${counts.getValue(p.id)}", p.id, CapacityNodeState.BOOTING), mutableListOf())
-                counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus
+                grow(p)
             }
         }
         val ordered = demands.sortedWith(compareByDescending<CapacityDemand> { it.priority }.thenBy { it.id })
@@ -159,12 +169,9 @@ object CapacityPolicy {
         val booting = mutableListOf<CapacityDemand>()
         // Account for warm and already-booting capacity before starting the backlog timer.
         val remaining = ordered.filter { d ->
-            val bin = bins.filter { fits(d, it) }.minWithOrNull(compareBy<Bin> { it.node.state != CapacityNodeState.READY }
-                .thenBy { pools.getValue(it.node.pool).cpuMillis.toLong() - it.allocations.sumOf { a -> a.budget.cpuMillis.toLong() } }
-                .thenBy { it.node.id })
+            val bin = bestFit(d)
             if (bin != null) {
-                bin.allocations += CapacityReservation(d.id, d.job, d.budget, d.work)
-                placements += CapacityPlacement(d.id, bin.node.id, bin.node.pool, bin.node.state == CapacityNodeState.READY)
+                place(d, bin)
                 if (bin.node.state != CapacityNodeState.READY) booting += d
             }
             bin == null
@@ -175,10 +182,8 @@ object CapacityPolicy {
             history[p.id] = old.copy(pressureSince = if (qualified) old.pressureSince ?: at else null)
         }
         for (d in remaining) {
-            // Fit warm and booting bins before considering growth. Best fit fills partial nodes across experiments.
-            var bin = bins.filter { fits(d, it) }.minWithOrNull(compareBy<Bin> { if (it.node.state == CapacityNodeState.READY) 0 else 1 }
-                .thenBy { pools.getValue(it.node.pool).cpuMillis.toLong() - it.allocations.sumOf { a -> a.budget.cpuMillis.toLong() } - d.budget.cpuMillis }
-                .thenBy { it.node.id })
+            // Fit warm and booting bins before considering growth.
+            var bin = bestFit(d)
             if (bin == null) {
                 val candidates = settings.pools.filter { compatible(d, it) }
                     .sortedWith(compareByDescending<CapacityPool> { it.vcpus }.thenByDescending { it.memoryMiB }.thenBy { it.id })
@@ -193,7 +198,7 @@ object CapacityPolicy {
                 if (p != null) {
                     val node = CapacityNode("new:${p.id}:${counts.getValue(p.id)}", p.id, CapacityNodeState.BOOTING)
                     bin = Bin(node, mutableListOf()); bins += bin
-                    counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus
+                    grow(p)
                     history[p.id] = history.getValue(p.id).copy(lastIncrease = at)
                 } else waiting += CapacityWait(d.id, when {
                     candidates.isEmpty() -> "no compatible ${d.market.tag} pool"
@@ -202,10 +207,7 @@ object CapacityPolicy {
                     else -> "sustained pressure or cooldown"
                 })
             }
-            if (bin != null) {
-                bin.allocations += CapacityReservation(d.id, d.job, d.budget, d.work)
-                placements += CapacityPlacement(d.id, bin.node.id, bin.node.pool, bin.node.state == CapacityNodeState.READY)
-            }
+            if (bin != null) place(d, bin)
         }
         for (p in settings.pools) {
             val floor = maxOf(p.warmNodes, manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0)
@@ -217,7 +219,7 @@ object CapacityPolicy {
             counts[p.id] = maxOf(counts.getValue(p.id) - idle - unusedLaunches, minOf(floor, counts.getValue(p.id)))
             // Manual capacity is still finite, quota-bounded and expires. It cannot change purchasing market.
             while (p.id !in growthBlocked && counts.getValue(p.id) < floor && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus) {
-                counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus
+                grow(p)
             }
         }
         return CapacityDecision(counts, placements, waiting, history)
