@@ -129,6 +129,15 @@ class SubmissionOptionsTest {
     }
 
     @Test
+    fun `a refused bench says what it refused`() {
+        val bench = BenchSpec("bench.json")
+        for ((spec, message) in listOf(
+            ExperimentSpec("e", bench = bench, repeats = 0) to "repeats must be between 1 and 100",
+            ExperimentSpec("e", bench = bench.copy(replayJobs = mapOf("a" to 1))) to "bench.replayJobs replays frozen cases",
+        )) assertContains(assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, 4) }.message.orEmpty(), message)
+    }
+
+    @Test
     fun `opaque recording requests survive immediate submissions and schedule edits`() = testApplication {
         val root = Files.createTempDirectory("measurement api")
         val queue = root.resolve("queue.json").also { it.writeText(java.io.File(System.getProperty("lab.repositoryRoot"), "deploy/nomad/queue.example.json").readText()) }

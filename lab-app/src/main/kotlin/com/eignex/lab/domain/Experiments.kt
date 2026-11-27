@@ -219,30 +219,34 @@ object Experiments {
         require(spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.seeds.isEmpty()) {
             "bench owns selection and seed expansion; submit opaque parameters in bench.request"
         }
-        require(spec.repeats in 1..MAX_REPEATS)
-        require(spec.configs.isNotEmpty() && spec.grid.values.none { it.isEmpty() })
+        require(spec.repeats in 1..MAX_REPEATS) { "repeats must be between 1 and $MAX_REPEATS" }
+        require(spec.configs.isNotEmpty() && spec.grid.values.none { it.isEmpty() }) { "a bench needs at least one config, and no empty grid axis" }
         spec.grid.values.fold(spec.configs.size.toLong()) { count, values ->
             require(count <= 256 && values.size <= 256 && count * values.size <= 256) { "bench grid expands beyond 256 arms" }
             count * values.size
         }
         val arms = arms(spec)
-        require(bench.replayJobs.values.all { it > 0 })
-        require(bench.replayJobs.isEmpty() || bench.frozenCases.isNotEmpty() && bench.replayJobs.keys == arms.map { it.label }.toSet())
+        require(bench.replayJobs.values.all { it > 0 }) { "bench.replayJobs must name jobs" }
+        require(bench.replayJobs.isEmpty() || bench.frozenCases.isNotEmpty() && bench.replayJobs.keys == arms.map { it.label }.toSet()) {
+            "bench.replayJobs replays frozen cases: it needs bench.frozenCases and one job for every arm"
+        }
         require(arms.size in 1..256 && arms.map { it.label }.distinct().size == arms.size) { "bench arm labels must be unique and bounded" }
-        require(bench.frozenCases.map(BenchCases::key).distinct().size == bench.frozenCases.size)
+        require(bench.frozenCases.map(BenchCases::key).distinct().size == bench.frozenCases.size) { "bench.frozenCases must not repeat a case" }
         for (arm in arms) {
-            require(arm.ref.isNotBlank() && !arm.ref.startsWith('-') && arm.ref.none(Char::isISOControl))
+            require(arm.ref.isNotBlank() && !arm.ref.startsWith('-') && arm.ref.none(Char::isISOControl)) { "arm ${arm.label} needs a ref that is not blank, an option or control characters" }
             val reference = arm.values["backend"] == REFERENCE_BACKEND
             require(!bench.adapterResources || !reference) { "adapter resources measure SDK arms; reference arms use their own recordings" }
             val keys = if (reference) setOf("ref", "backend", "solver", "timeout", "processors", "fixed") else setOf("ref")
             require(arm.values.keys.all { key -> key in keys || !reference && key.startsWith("param.") && key.length > 6 }) {
                 "bench arms take ref and param.<opaque request key>; reference arms take backend, solver, timeout, processors and fixed"
             }
-            require(arm.values.values.none { value -> value.any(Char::isISOControl) })
+            require(arm.values.values.none { value -> value.any(Char::isISOControl) }) { "arm ${arm.label} has a value with control characters" }
             if (reference) {
                 require(!arm.values["solver"].isNullOrBlank()) { "reference arms need a solver" }
-                require(arm.timeoutMs in 1..300_000_000 && (arm.values["processors"] == null || arm.values["processors"]?.toIntOrNull() in 1..1024))
-                require(arm.values["fixed"] == null || arm.values["fixed"]?.toBooleanStrictOrNull() != null)
+                require(arm.timeoutMs in 1..300_000_000 && (arm.values["processors"] == null || arm.values["processors"]?.toIntOrNull() in 1..1024)) {
+                    "reference arm ${arm.label} needs a timeout of 1 ms to 300000 s and processors between 1 and 1024"
+                }
+                require(arm.values["fixed"] == null || arm.values["fixed"]?.toBooleanStrictOrNull() != null) { "reference arm ${arm.label}: fixed must be true or false" }
             }
         }
         require(spec.vcpus == null || spec.vcpus in 1..maxVcpus) { "vcpus must be between 1 and $maxVcpus" }
