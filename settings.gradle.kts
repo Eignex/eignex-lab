@@ -35,9 +35,6 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
         mavenCentral()
-        maven("https://central.sonatype.com/repository/maven-snapshots/") {
-            mavenContent { snapshotsOnly(); includeGroup("com.eignex") }
-        }
         ivy {
             url = uri("https://github.com/Eignex/kbuild/releases/download")
             patternLayout { artifact("v[revision]/[artifact]-[revision](-[classifier]).[ext]") }
