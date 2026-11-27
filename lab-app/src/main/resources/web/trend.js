@@ -172,6 +172,9 @@
     return String(series).split(':').map(function (part) { return /^[0-9a-f]{64}$/.test(part) ? part.slice(0, 8) : part; }).join(':');
   }
 
+  // Problems lost and gained against another run, or a dash when there was nothing to compare.
+  function flips(lost, gained) { return lost == null ? '–' : '−' + lost + ' +' + gained; }
+
   function show(r, evt, opts) {
     const suite = opts.suite;
     const rows = opts.rows ? opts.rows(r) : [
@@ -183,12 +186,12 @@
         (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],
       ['fully decided', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
       ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['worse incumbent', r.worse], ['problems', r.problems],
-      ['vs previous', r.lost == null ? '–' : '−' + r.lost + ' +' + r.gained + (r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
-      ['proof vs previous', r.proofLost == null ? '–' : '−' + r.proofLost + ' +' + r.proofGained],
-      ['objective vs previous', r.objectiveLost == null ? '–' : '−' + r.objectiveLost + ' +' + r.objectiveGained],
-      ['confirmed proof', r.confirmedProofLost == null ? '–' : '−' + r.confirmedProofLost + ' +' + r.confirmedProofGained],
-      ['confirmed objective', r.confirmedObjectiveLost == null ? '–' : '−' + r.confirmedObjectiveLost + ' +' + r.confirmedObjectiveGained],
-      ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
+      ['vs previous', flips(r.lost, r.gained) + (r.lost != null && r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
+      ['proof vs previous', flips(r.proofLost, r.proofGained)],
+      ['objective vs previous', flips(r.objectiveLost, r.objectiveGained)],
+      ['confirmed proof', flips(r.confirmedProofLost, r.confirmedProofGained)],
+      ['confirmed objective', flips(r.confirmedObjectiveLost, r.confirmedObjectiveGained)],
+      ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : flips(r.confirmedLost, r.confirmedGained)],
     ];
     const group = suite && (r.themes || {})[suite];
     if (group) {
