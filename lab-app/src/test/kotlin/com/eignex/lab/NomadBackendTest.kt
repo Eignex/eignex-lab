@@ -291,7 +291,7 @@ class NomadBackendTest {
         val held = NomadBackend(store, control, journal, { root.resolve("jobs/$it") }, solveAllowed = journal::allowsNewSolve)
         application { workerApi(store, held, journal) { true } }
         suspend fun post(path: String, body: String) = client.post("/worker/v1/sessions/${session.id}/$path") {
-            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            credentials()
             setBody(body)
         }
         try {
@@ -308,7 +308,7 @@ class NomadBackendTest {
             assertEquals(HttpStatusCode.NoContent, post("phase", Json.encodeToString(WorkerPhase(owned.owner, "executing"))).status)
             assertEquals(HttpStatusCode.NoContent, post("progress", Json.encodeToString(WorkerProgress(owned.owner, owned.indices.first()))).status)
             val log = client.put("/worker/v1/sessions/${session.id}/logs/${owned.indices.first()}/out?offset=0") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 header("X-Lab-Attempt", Json.encodeToString(owned.owner)); setBody("owned progress")
             }
             assertEquals(HttpStatusCode.OK, log.status)
@@ -334,7 +334,7 @@ class NomadBackendTest {
         suspend fun send(owner: AttemptOwner, sha: String, bytes: ByteArray): HttpResponse {
             val header = Json.encodeToString(WorkerPackedArtifacts(owner, listOf(ResultBlob(sha, bytes.size.toLong())))).toByteArray()
             return client.post("/worker/v1/sessions/${session.id}/uploads-packed") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 setBody(java.nio.ByteBuffer.allocate(4 + header.size + bytes.size).putInt(header.size).put(header).put(bytes).array())
             }
         }
@@ -355,7 +355,7 @@ class NomadBackendTest {
                 mapOf("0.out" to outputs.keys.first(), "0.err" to outputs.keys.last()))
             repeat(2) {
                 assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/${session.id}/commit") {
-                    header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                    credentials()
                     setBody(Json.encodeToString(WorkerCommit(claim.owner, result)))
                 }.status)
             }
@@ -373,7 +373,7 @@ class NomadBackendTest {
         suspend fun send(blobs: List<ResultBlob>, bytes: ByteArray = byteArrayOf()): HttpResponse {
             val header = Json.encodeToString(WorkerPackedArtifacts(claim.owner, blobs)).toByteArray()
             return client.post("/worker/v1/sessions/${session.id}/uploads-packed") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 setBody(java.nio.ByteBuffer.allocate(4 + header.size + bytes.size).putInt(header.size).put(header).put(bytes).array())
             }
         }
@@ -432,7 +432,7 @@ class NomadBackendTest {
         val snapshot = ResourceCheckpoint(10, session.budget, "cgroup-v2-hard", "200000 100000", "1073741824",
             mapOf("cpu.stat" to "usage_usec 100"), "worker-cumulative-lower-bound")
         suspend fun send(owner: AttemptOwner): HttpResponse = client.post("/worker/v1/sessions/session/resource-checkpoint") {
-            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            credentials()
             setBody(Json.encodeToString(WorkerResourceCheckpoint(owner, snapshot)))
         }
         assertEquals(HttpStatusCode.Conflict, send(claim.owner.copy(token = "wrong")).status)
@@ -456,7 +456,7 @@ class NomadBackendTest {
         application { workerApi(store, backend(), artifacts) { false } }
         suspend fun send(owner: AttemptOwner = claim.owner, value: WorkerDiagnosticFiles = body) =
             client.post("/worker/v1/sessions/${session.id}/deadline-diagnostics") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 header("X-Lab-Attempt", Json.encodeToString(owner)); setBody(Json.encodeToString(value))
             }
         assertEquals(HttpStatusCode.Conflict, send().status, "a live row cannot publish failed diagnostics")
@@ -501,7 +501,7 @@ class NomadBackendTest {
             } else Json.encodeToString(WorkerCommit(owner, result)).toByteArray().also { assertTrue(it.size > PACKED_HEADER_BYTES) }
             val path = (if (packed) "commit-packed" else "commit") + if (large) "-large" else ""
             return client.post("/worker/v1/sessions/${session.id}/$path") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 setBody(payload)
             }
         }
@@ -529,7 +529,7 @@ class NomadBackendTest {
             val header = Json.encodeToString(WorkerPackedCommit(owner, result, listOf(ResultBlob(sha, bytes.size.toLong())))).toByteArray()
             val body = java.nio.ByteBuffer.allocate(4 + header.size + content.size).putInt(header.size).put(header).put(content).array()
             return client.post("/worker/v1/sessions/${session.id}/commit-packed") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 setBody(body)
             }
         }
@@ -565,7 +565,7 @@ class NomadBackendTest {
         application { workerApi(store, durableBackend, journal) { true } }
         try {
             val response = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 setBody(Json.encodeToString(body))
             }
             assertEquals(HttpStatusCode.NoContent, response.status)
@@ -643,7 +643,7 @@ class NomadBackendTest {
         val body = WorkerInlineCommit(claim.owner, result, mapOf(hash to Base64.getEncoder().encodeToString(bytes)))
         application { workerApi(store, backend(), artifacts) { true } }
         suspend fun send(value: WorkerInlineCommit) = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
-            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            credentials()
             setBody(Json.encodeToString(value))
         }
         repeat(2) { assertEquals(HttpStatusCode.NoContent, send(body).status) }
@@ -673,7 +673,7 @@ class NomadBackendTest {
         application { workerApi(store, backend(), artifacts) { true } }
         repeat(2) {
             assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/${session.id}/commit-inline") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 setBody(Json.encodeToString(body))
             }.status)
         }
@@ -711,7 +711,7 @@ class NomadBackendTest {
             mapOf("cases/0/profile-x/cli.jfr" to sha, "0.out" to smallSha), regionalBlobs = mapOf(sha to capture.size.toLong()))
         val body = WorkerInlineCommit(claim.owner, result, mapOf(smallSha to Base64.getEncoder().encodeToString(small)))
         suspend fun send(value: WorkerInlineCommit = body) = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
-            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            credentials()
             setBody(Json.encodeToString(value))
         }
         try {
@@ -748,7 +748,7 @@ class NomadBackendTest {
         results.objects[sha] = capture
         val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.err" to sha), regionalBlobs = mapOf(sha to capture.size.toLong()))
         val response = client.post("/worker/v1/sessions/${session.id}/commit") {
-            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            credentials()
             setBody(Json.encodeToString(WorkerCommit(claim.owner, result)))
         }
         assertEquals(HttpStatusCode.NoContent, response.status)
@@ -778,7 +778,7 @@ class NomadBackendTest {
             application { workerApi(store, backend(), artifacts, inputSigner = URI("http://127.0.0.1:${signer.address.port}/")) { true } }
             val sha = "a".repeat(64)
             suspend fun sign(signature: InputSignature, owner: AttemptOwner = claim.owner) = client.post("/worker/v1/sessions/${session.id}/input-signature") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 header("X-Lab-Attempt", Json.encodeToString(owner))
                 setBody(Json.encodeToString(InputSignature.serializer(), signature))
             }
@@ -808,7 +808,7 @@ class NomadBackendTest {
             mapOf(hash to Base64.getEncoder().encodeToString("corrupt".toByteArray())))
         application { workerApi(store, backend(), artifacts) { true } }
         suspend fun send() = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
-            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            credentials()
             setBody(Json.encodeToString(body))
         }
         assertEquals(HttpStatusCode.ServiceUnavailable, send().status)
@@ -1271,6 +1271,10 @@ class NomadBackendTest {
         token = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
         control.allocations["allocation"] = NomadAllocation("allocation", session.nomadJobId, "node", "running", "run")
         return id
+    }
+    /** The worker headers of the test session's allocation: its bearer token and a signed identity. */
+    private fun HttpRequestBuilder.credentials() {
+        header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
     }
     private fun jwt(allocation: String = "allocation", expires: Long = now()/1000 + 60, singleAudience: Boolean = false, namespace: String = control.namespace, kid: String = "test"): String {
         val header = b64("""{"alg":"RS256","kid":"$kid"}""".toByteArray())
@@ -1885,7 +1889,7 @@ class NomadBackendTest {
         application { workerApi(store, backend(), artifacts) { true } }
         repeat(3) {
             val response = client.post("/worker/v1/sessions/${session.id}/selection") {
-                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                credentials()
                 setBody(Json.encodeToString(WorkerSelection(claim.owner, listOf(listOf(Problem("profile", "main"))))))
             }
             assertEquals(HttpStatusCode.Conflict, response.status)
@@ -2210,7 +2214,6 @@ class NomadBackendTest {
         setup(1)
         var allowed = true
         application { workerApi(store, backend(), artifacts) { allowed } }
-        fun HttpRequestBuilder.credentials() { header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt()) }
         client.post("/worker/v1/sessions/session/register") { credentials(); setBody(Json.encodeToString(WorkerRegistration("release"))) }
         val claim = Json.decodeFromString<IterationClaim>(client.post("/worker/v1/sessions/session/claim") { credentials() }.bodyAsText())
         allowed = false
@@ -2225,7 +2228,6 @@ class NomadBackendTest {
     @Test fun `named claims over the worker API run rows side by side while unnamed replies keep their old shape`() = testApplication {
         setup(3, ExperimentSpec("single-arm", problems = listOf(mapOf("suite" to "s")), seeds = listOf(1), host = HostPlacement.AUTO))
         application { workerApi(store, backend(), artifacts) { true } }
-        fun HttpRequestBuilder.credentials() { header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt()) }
         client.post("/worker/v1/sessions/session/register") { credentials(); setBody(Json.encodeToString(WorkerRegistration("release"))) }
         suspend fun claim(name: String?) = client.post("/worker/v1/sessions/session/claim") {
             credentials(); setBody(Json.encodeToString(ClaimRequest(wait = true, claim = name)))
@@ -2251,7 +2253,6 @@ class NomadBackendTest {
     @Test fun `worker API has no operator routes and scopes mutation and uploads to its signed allocation`() = testApplication {
         setup(1)
         application { workerApi(store, backend(), artifacts) { true } }
-        fun HttpRequestBuilder.credentials() { header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt()) }
         assertEquals(HttpStatusCode.NotFound, client.get("/jobs").status)
         assertEquals(HttpStatusCode.Conflict, client.post("/worker/v1/sessions/session/register") { setBody(Json.encodeToString(WorkerRegistration("release"))) }.status)
         assertEquals(HttpStatusCode.OK, client.post("/worker/v1/sessions/session/register") { credentials(); setBody(Json.encodeToString(WorkerRegistration("release"))) }.status)
