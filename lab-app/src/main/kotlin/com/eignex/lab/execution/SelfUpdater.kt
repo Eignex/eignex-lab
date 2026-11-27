@@ -48,8 +48,10 @@ class SelfUpdater(
             println("self-update: fetch failed")
             return false
         }
-        val head = exec(dir, listOf("git", "rev-parse", "HEAD"), null).second.trim()
-        val upstream = exec(dir, listOf("git", "rev-parse", "@{u}"), null).second.trim()
+        // Output carries stderr too: a failed rev-parse (no upstream, detached HEAD) is never a commit to move to.
+        fun revision(name: String) = exec(dir, listOf("git", "rev-parse", name), null).let { (exit, out) -> if (exit == 0) out.trim() else "" }
+        val head = revision("HEAD")
+        val upstream = revision("@{u}")
         pending = head.isNotEmpty() && upstream.isNotEmpty() && head != upstream
         if (pending) println("self-update: ${head.take(9)} -> ${upstream.take(9)} waiting for the runner to be free")
         return pending
