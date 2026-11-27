@@ -26,8 +26,6 @@ internal fun indexPage(
     queueOrder: List<Long> = emptyList(),
     /** The earlier run a job's estimate learns from ([EstimateHistory.lookup]). */
     caseHistory: (Job) -> CaseHistory? = { null },
-    /** Why each queued job waits ([Waiting.waiting]), by job. */
-    waiting: Map<Long, String> = emptyMap(),
     /** Each running job's hosts and their parts ([Store.hostProgress]), by job. */
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
@@ -116,7 +114,6 @@ internal fun indexPage(
                                 active,
                                 queueOrder,
                                 estimates,
-                                waiting,
                                 hosts,
                                 nodes,
                             ),
@@ -397,7 +394,6 @@ private fun activeTable(
     active: List<Job>,
     queueOrder: List<Long>,
     estimates: Map<Long, WorkEstimate>,
-    waiting: Map<Long, String>,
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
 ): Html {
@@ -425,7 +421,6 @@ private fun activeTable(
         positions,
         filterable = false,
         estimates = estimates,
-        waiting = waiting,
         hosts = hosts,
         nodes = nodes,
     )
@@ -437,7 +432,6 @@ private fun jobTable(
     positions: Map<Long, Int>,
     filterable: Boolean,
     estimates: Map<Long, WorkEstimate>? = null,
-    waiting: Map<Long, String> = emptyMap(),
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
 ): Html = buildHtml {

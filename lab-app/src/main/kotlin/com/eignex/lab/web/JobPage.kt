@@ -26,8 +26,6 @@ internal fun jobPage(
     references: Map<ProblemKey, Reference> = emptyMap(),
     /** The downloads' holds on this job that have not lapsed ([Hold]). */
     holds: List<Hold> = emptyList(),
-    /** Why the job waits, while it is queued ([Waiting.waiting]). */
-    waiting: String? = null,
     /** Each host's part of the job ([Store.hostProgress]). */
     hosts: List<HostProgress> = emptyList(),
     nodes: List<JobNode> = emptyList(),
@@ -85,11 +83,6 @@ internal fun jobPage(
                     emit(job.experiment.repository)
                     br {}
                     emit(refText(status.repoUrl, job))
-                }
-            }
-            waiting?.let {
-                p(classes = "note") {
-                    emit(it)
                 }
             }
             nav(classes = "section-links") {
