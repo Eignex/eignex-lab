@@ -112,7 +112,8 @@ main() {
   local location
   location="$(aws s3api get-bucket-location --bucket "$bucket" --region "$region" --output json)" ||
     fail "cannot read the bucket's region"
-  [[ "$(jq -r '.LocationConstraint // ""' <<< "$location")" == "$region" ]] ||
+  # S3 answers no location constraint for us-east-1.
+  [[ "$(jq -r '.LocationConstraint // "" | if . == "" then "us-east-1" else . end' <<< "$location")" == "$region" ]] ||
     fail "bucket and workers must use the same region"
 
   local service="com.amazonaws.$region.s3" existing endpoint id created added

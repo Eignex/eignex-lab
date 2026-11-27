@@ -114,6 +114,18 @@ test_creates_an_endpoint_and_starts_policy_and_lifecycle_when_missing() {
   equal '["LabBuildArchiveExpiry","LabResultBlobExpiry"]' "$(jq -c '[.Rules[].ID]' "$root/lifecycle-configuration.json")" "lifecycle"
 }
 
+test_us_east_1_bucket_has_no_location_constraint() {
+  setup
+  echo '{"LocationConstraint": null}' > "$root/aws/s3api-get-bucket-location.json"
+  PATH="$root/bin:$PATH" bash "$script" --bucket inputs --region us-east-1 --vpc vpc-1 --route-table rtb-a \
+    --native-user lab-native --receipt "$root/receipt.json" > "$root/out" 2> "$root/err" ||
+    { cat "$root/err" >&2; echo "  failed: refused a us-east-1 bucket" >&2; exit 1; }
+  setup
+  echo '{"LocationConstraint": null}' > "$root/aws/s3api-get-bucket-location.json"
+  store && { echo "  failed: accepted a us-east-1 bucket for eu-north-1 workers" >&2; exit 1; }
+  check "explains" grep -q "same region" "$root/err"
+}
+
 test_refuses_another_region_an_interface_endpoint_and_other_failures() {
   setup
   echo '{"LocationConstraint": "us-west-2"}' > "$root/aws/s3api-get-bucket-location.json"
