@@ -100,6 +100,7 @@ follow_public_ip() {
       temporary="$server.tmp"
       if ! { jq --indent 2 --arg rpc "$updated" '.advertise.rpc = $rpc' "$server" > "$temporary" &&
         chmod "$(mode_of "$server")" "$temporary" && mv -f "$temporary" "$server"; }; then
+        rm -f "$temporary"
         fail "cannot rewrite $server"
       fi
       restart_nomad_agents "$data/nomad" || exit 1
