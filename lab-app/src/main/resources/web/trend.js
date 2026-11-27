@@ -87,7 +87,7 @@
     if (xMode === 'date') {
       const n = Math.max(2, Math.min(5, runs.length, Math.floor(pw / 110)));
       for (let k = 0; k < n; k++) {
-        const t = n === 1 ? t0 : t0 + (t1 - t0) * k / (n - 1);
+        const t = t0 + (t1 - t0) * k / (n - 1);
         const px = t1 === t0 ? m.l + pw / 2 : m.l + (t - t0) / (t1 - t0) * pw;
         el('text', {x: px, y: H - 8, 'text-anchor': 'middle', class: 'tick'}, svg).textContent = when(t);
       }
@@ -116,7 +116,7 @@
       }
       const pts = order.map(function (i, k) { const v = s.value(runs[i]); return v == null ? null : [x(i), yy(v), runs[i], k]; }).filter(Boolean);
       if (pts.length > 1) {
-        const d = pts.map(function (p, k) { return (k > 0 && (s.lineKey || lineKey)(pts[k - 1][2]) === (s.lineKey || lineKey)(p[2]) &&
+        const d = pts.map(function (p, k) { return (k > 0 && lineKey(pts[k - 1][2]) === lineKey(p[2]) &&
           (!benchmarkMode || pts[k - 1][3] === p[3] - 1) ? 'L' : 'M') + p[0] + ',' + p[1]; }).join('');
         el('path', {d: d, fill: 'none', stroke: s.color,
           'stroke-width': 2, 'stroke-dasharray': s.dash || '', 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
