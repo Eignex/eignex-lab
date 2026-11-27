@@ -14,15 +14,6 @@ import java.util.concurrent.TimeUnit
 internal object NativeReference {
     private const val EXIT_WAIT_MS = 5_000L
 
-    /** Whether [binary] runs at all ([versionArg] exits 0). */
-    fun available(binary: String, versionArg: String = "--version"): Boolean = runCatching {
-        val p = ProcessBuilder(binary, versionArg)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-            .start()
-        p.waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS) && p.exitValue() == 0
-    }.getOrElse { false }
-
     fun exec(cmd: List<String>, timeoutMillis: Long, input: ((Writer) -> Unit)? = null): Pair<String, Long> {
         val startNanos = System.nanoTime()
         WatchedProcess.start(ProcessBuilder(cmd).redirectErrorStream(true), timeoutMillis, input).use { watched ->

@@ -12,8 +12,6 @@ object Cvc5Reference {
     /** The cvc5 executable, from `PATH` by default; override with `LAB_CVC5=/path/to/cvc5`. */
     private val BINARY = System.getenv("LAB_CVC5") ?: "cvc5"
 
-    fun available(): Boolean = NativeReference.available(BINARY)
-
     fun run(instance: Instance, budget: Budget, binary: String = BINARY): ReferenceResult {
         val started = System.nanoTime()
         val identity = ReferenceIdentity.native(binary, budget.timeoutMillis)

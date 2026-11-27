@@ -22,12 +22,6 @@ object ClaspReference {
 
     private val docker = DockerReference(IMAGE, CONTAINER_LABEL, "clasp")
 
-    /** Kill any leftover reference containers from an earlier interrupted run. */
-    fun reapStragglers() = docker.reapStragglers()
-
-    /** Whether the clasp image is built (`docker image inspect`). */
-    fun imageAvailable(): Boolean = docker.imageAvailable()
-
     /** Solve [instance] (DIMACS, OPB or WCNF) with clasp under [budget], single-threaded. The instance is streamed
      *  on stdin (OPB and WCNF get their problem line synthesized first). Objective sense is always minimise for
      *  OPB (clasp's only PB mode); DIMACS has none — both report `maximize=false`. */

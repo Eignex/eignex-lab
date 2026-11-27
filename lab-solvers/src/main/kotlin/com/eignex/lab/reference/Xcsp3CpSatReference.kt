@@ -40,12 +40,6 @@ object Xcsp3CpSatReference {
         val cpModelPresolve: Boolean? = null,
     )
 
-    /** Kill any leftover reference containers from an earlier interrupted run. */
-    fun reapStragglers() = docker.reapStragglers()
-
-    /** Whether the converter image is built (`docker image inspect`). */
-    fun imageAvailable(): Boolean = docker.imageAvailable()
-
     private val image: String by lazy { ReferenceIdentity.image(IMAGE, DOCKER_INSPECT_WAIT_MS).executable }
 
     fun identity(build: String = image): String = "$IMAGE@$build|$VERSION"

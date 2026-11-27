@@ -12,8 +12,6 @@ object KissatReference {
     /** The kissat executable, from `PATH` by default; override with `LAB_KISSAT=/path/to/kissat`. */
     private val BINARY = System.getenv("LAB_KISSAT") ?: "kissat"
 
-    fun available(): Boolean = NativeReference.available(BINARY)
-
     fun run(instance: Instance, budget: Budget, binary: String = BINARY): ReferenceResult {
         val started = System.nanoTime()
         val identity = ReferenceIdentity.native(binary, budget.timeoutMillis)

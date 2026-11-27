@@ -30,24 +30,6 @@ class DockerReference(private val image: String, private val label: String, priv
         addAll(arguments)
     }
 
-    /** Best-effort cleanup of containers left by an interrupted JVM. */
-    fun reapStragglers() {
-        runCatching {
-            val list = ProcessBuilder("docker", "ps", "-q", "--filter", "label=$label").start()
-            val ids = list.inputStream.bufferedReader().use { it.readText() }.trim()
-            list.waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS)
-            if (ids.isNotEmpty()) kill(ids.lines(), EXIT_WAIT_MS * 2)
-        }
-    }
-
-    fun imageAvailable(): Boolean = runCatching {
-        val process = ProcessBuilder("docker", "image", "inspect", image)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-            .start()
-        process.waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS) && process.exitValue() == 0
-    }.getOrDefault(false)
-
     fun exec(command: List<String>, name: String, timeoutMillis: Long, input: ((Writer) -> Unit)? = null): Run {
         // Parser chatter must be drained separately from stdout, which carries the solver's verdict.
         val stderr = File.createTempFile("$label-", ".err")
@@ -55,7 +37,7 @@ class DockerReference(private val image: String, private val label: String, priv
             val started = System.nanoTime()
             // Killing only the Docker client would leave the container running.
             val watched = WatchedProcess.start(ProcessBuilder(command).redirectError(stderr), timeoutMillis, input) {
-                kill(listOf(name))
+                kill(name)
             }
             val process = watched.process
             try {
@@ -69,7 +51,7 @@ class DockerReference(private val image: String, private val label: String, priv
                 return Run(stdout, error, exit, elapsedMs, watched.timedOut)
             } catch (failure: Exception) {
                 if (process.isAlive) {
-                    runCatching { kill(listOf(name)) }
+                    runCatching { kill(name) }
                     process.destroyForcibly()
                 }
                 throw failure
@@ -81,12 +63,12 @@ class DockerReference(private val image: String, private val label: String, priv
         }
     }
 
-    private fun kill(names: List<String>, timeoutMillis: Long = EXIT_WAIT_MS) {
-        ProcessBuilder(listOf("docker", "kill") + names)
+    private fun kill(name: String) {
+        ProcessBuilder("docker", "kill", name)
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
             .redirectError(ProcessBuilder.Redirect.DISCARD)
             .start()
-            .waitFor(timeoutMillis, TimeUnit.MILLISECONDS)
+            .waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS)
     }
 
     data class Run(val stdout: String, val stderr: String, val exit: Int?, val elapsedMs: Long, val timedOut: Boolean)

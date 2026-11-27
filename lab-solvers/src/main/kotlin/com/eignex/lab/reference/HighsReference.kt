@@ -24,8 +24,6 @@ object HighsReference {
         "mip_abs_gap" to "1e-06",
     )
 
-    fun available(): Boolean = NativeReference.available(BINARY)
-
     /** The build, as `highs --version` prints it; a binary that will not say refuses to solve rather than cache under a guess. */
     private val version: String by lazy {
         NativeReference.exec(listOf(BINARY, "--version"), VERSION_WAIT_MS).first.lineSequence().first().trim().also {

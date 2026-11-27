@@ -25,12 +25,6 @@ object ScipReference {
 
     private val docker = DockerReference(IMAGE, CONTAINER_LABEL, "scip")
 
-    /** Kill any leftover reference containers from an earlier interrupted run. */
-    fun reapStragglers() = docker.reapStragglers()
-
-    /** Whether the SCIP image is built (`docker image inspect`). */
-    fun imageAvailable(): Boolean = docker.imageAvailable()
-
     /** SCIP's tolerances and gap limit, its defaults: recorded with every row and part of its cache identity. */
     internal const val OPTIONS = "numerics/feastol=1e-06,numerics/epsilon=1e-09,limits/gap=0"
 
