@@ -30,7 +30,7 @@ object Z3Reference {
             try {
                 val limits = ToolLimits((budget.timeoutMillis / 1000 + if (budget.timeoutMillis % 1000 == 0L) 0 else 1).coerceAtLeast(1),
                     Math.addExact(budget.timeoutMillis, 5_000L))
-                val run = ToolProcess.run(cmd, work, limits.timeoutMs, limits = limits, inputFiles = listOf(file))
+                val run = BoundedToolProcess.run(cmd, work, limits, inputs = listOf(file))
                 val receipt = checkNotNull(run.resources)
                 parse(run.stdout, run.elapsedMs, receipt.command, run.stderr, run.exit ?: 137, run.timedOut,
                     resourcesQualified = receipt.qualified()).let { result ->

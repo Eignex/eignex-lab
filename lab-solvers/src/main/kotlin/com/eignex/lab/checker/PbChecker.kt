@@ -85,8 +85,8 @@ class PbChecker(
             val blocking = if (format == "WCNF") blocking(source, solution).orEmpty() else emptyList()
             val logged = (listOf(solution) + blocking).joinToString(" ")
             proof.writeText("pseudo-Boolean proof version 3.0\nsol $logged;\noutput NONE;\n$conclusion\nend pseudo-Boolean proof;\n")
-            ToolProcess.run(listOf(binary.path, parser, source.path, proof.path), work, timeoutMs, env = mapOf("NO_COLOR" to "1"),
-                limits = ToolLimits(CPU_SECONDS, timeoutMs), inputFiles = listOf(source, proof))
+            BoundedToolProcess.run(listOf(binary.path, parser, source.path, proof.path), work, ToolLimits(CPU_SECONDS, timeoutMs),
+                env = mapOf("NO_COLOR" to "1"), inputs = listOf(source, proof))
         }
         val diagnostic = "command: ${binary.path} $parser <plain copy of ${case.sources.model.path}> point.pbp " +
             "(`sol` with the witness and satisfied soft clauses' blocking variables, then `$conclusion`)\nexit ${run.exit ?: "none (killed)"} after ${run.elapsedMs} ms; output: ${run.tail()}"

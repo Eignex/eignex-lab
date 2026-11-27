@@ -71,7 +71,8 @@ object BoundedToolProcess {
         else -> error("unsupported SMT tool resource controls: $host")
     }
 
-    fun run(arguments: List<String>, directory: File, limits: ToolLimits, stdin: File?, env: Map<String, String>, inputs: List<File>): ToolRun {
+    fun run(arguments: List<String>, directory: File, limits: ToolLimits, stdin: File? = null, env: Map<String, String> = emptyMap(),
+            inputs: List<File> = emptyList()): ToolRun {
         require(arguments.isNotEmpty())
         val host = System.getProperty("os.name")
         val captures = File(directory, "tool-resources-${UUID.randomUUID()}")

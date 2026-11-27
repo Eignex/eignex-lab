@@ -69,8 +69,8 @@ class SmtChecker(
         val response = File(work, "response.rsmt2").apply { writeText("sat\n${case.witness}\n") }
         val args = listOf("--check-model=true", "--strict=false", "--time=30s", "--size=4G", "--report-style=minimal", "--warn=-all")
         val run = CorpusFiles.withPlainFile(case.sources.model) { source ->
-            ToolProcess.run(listOf(binary.path) + args + source.path, work, timeoutMs, stdin = response,
-                limits = ToolLimits(30, timeoutMs), inputFiles = listOf(source))
+            BoundedToolProcess.run(listOf(binary.path) + args + source.path, work, ToolLimits(30, timeoutMs), stdin = response,
+                inputs = listOf(source))
         }
         val diagnostic = "command: ${binary.path} ${args.joinToString(" ")} <plain copy of ${case.sources.model.path}> " +
             "< response.rsmt2 (`sat`, then the model)\nexit ${run.exit ?: "none (killed)"} after ${run.elapsedMs} ms; output: ${run.tail()}"
