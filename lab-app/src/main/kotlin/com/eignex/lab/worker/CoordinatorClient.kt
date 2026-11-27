@@ -39,15 +39,24 @@ internal class CoordinatorClient(
 ) {
     fun request(path: String, method: String = "GET", body: HttpRequest.BodyPublisher = HttpRequest.BodyPublishers.noBody(), owner: AttemptOwner? = null, range: Long = 0): HttpResponse<ByteArray> {
         val started = System.nanoTime()
-        val timeout = if (path == "deadline-diagnostics") 5_000L else if (path == "resource-checkpoint") 3_000L else if (path == "run-timeout") 30_000L else if (path == "preparation-diagnostics") {
-            // Evidence only: do not extend work, retry, or accept writes after the owning lease expires.
-            val lease = leaseRemainingMs()
-            if (lease <= 0) throw ExecutionFenced("worker lease expired")
-            minOf(5_000, lease)
-        } else {
-            checkRun(); val lease = leaseRemainingMs()
-            if (lease <= 0) throw ExecutionFenced("worker lease expired")
-            minOf(30_000, runRemainingMs() ?: 30_000, lease).coerceAtLeast(1)
+        val timeout = when {
+            path == "deadline-diagnostics" -> 5_000L
+            path == "resource-checkpoint" -> 3_000L
+            path == "run-timeout" -> 30_000L
+            // The worker's own console: the coordinator takes it in any session state, so its last lines (why the
+            // session ended) still arrive after the run deadline or the lease has passed.
+            path.startsWith("worker-log?") -> 5_000L
+            path == "preparation-diagnostics" -> {
+                // Evidence only: do not extend work, retry, or accept writes after the owning lease expires.
+                val lease = leaseRemainingMs()
+                if (lease <= 0) throw ExecutionFenced("worker lease expired")
+                minOf(5_000, lease)
+            }
+            else -> {
+                checkRun(); val lease = leaseRemainingMs()
+                if (lease <= 0) throw ExecutionFenced("worker lease expired")
+                minOf(30_000, runRemainingMs() ?: 30_000, lease).coerceAtLeast(1)
+            }
         }
         val builder = HttpRequest.newBuilder(URI.create(api.toString().trimEnd('/') + "/worker/v1/sessions/${NomadClient.encode(id)}/$path"))
             .timeout(Duration.ofMillis(timeout)).header("Authorization", "Bearer $token").header("X-Lab-Allocation", allocation)

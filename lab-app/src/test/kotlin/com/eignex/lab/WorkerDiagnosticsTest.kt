@@ -71,4 +71,21 @@ class WorkerDiagnosticsTest {
             assertTrue(received)
         } finally { server.stop(0); deleteTree(root) }
     }
+
+    @Test fun `the worker console still uploads once the run deadline and lease are spent`() {
+        val root = Files.createTempDirectory("console-client")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/worker-log") { exchange ->
+            val reply = """{"offset":${exchange.requestBody.readAllBytes().size}}""".toByteArray()
+            exchange.sendResponseHeaders(200, reply.size.toLong()); exchange.responseBody.use { it.write(reply) }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "identity") }
+            val coordinator = CoordinatorClient(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation",
+                identity, HttpClient.newHttpClient(), { -1 }, { -1 }, { throw RunDeadlineExceeded() }, { null })
+            val response = coordinator.request("worker-log?offset=0", "PUT", java.net.http.HttpRequest.BodyPublishers.ofByteArray("retired\n".toByteArray()))
+            assertEquals(200, response.statusCode())
+        } finally { server.stop(0); deleteTree(root) }
+    }
 }
