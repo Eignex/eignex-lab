@@ -154,7 +154,9 @@ class CaseChecks(
             checkNotNull(SharedInputs.environment()) { "LAB_SHARED_INPUT_ROOT is not set in this service's environment" }
                 .acquire(inputs, required = required)
         } catch (failure: Exception) { throw SharedCheckInputUnavailable(failure) } else null
-        val check = lease.use { checker.check(problem, record, revision) } ?: return null
+        // The leased view holds the declared corpus files whether or not the job's `nomad/prepared-corpus` link survived.
+        val located = lease?.let { problem.corpusIn(it.directory) } ?: problem
+        val check = lease.use { checker.check(located, record, revision) } ?: return null
         store.plans.caseCheck(jobId, index, check.json())
         log(jobId, "case $index: ${check.policy}: ${check.state}: ${check.reason}")
         return check
@@ -215,4 +217,10 @@ class CaseChecks(
             return null
         }
     }
+}
+
+/** [this] with its `lab-corpus/` model, data and include paths under [corpus]; other paths as they are. */
+internal fun Problem.corpusIn(corpus: java.nio.file.Path): Problem {
+    fun path(value: String): String = if (value.startsWith("lab-corpus/")) portablePath(value, corpus, corpus).toString() else value
+    return copy(model = model?.let(::path), data = data?.let(::path), includeDirs = includeDirs.map(::path))
 }

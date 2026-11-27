@@ -37,6 +37,27 @@ class JobDirArchiverTest {
         assertTrue(Files.list(hot).use { it.toList() }.isEmpty(), "nothing is left behind on the hot volume")
     }
 
+    @Test fun `an archived job keeps its links to prepared sources and corpus but none into the hot volume`() {
+        val corpus = Files.createDirectories(root.resolve("data/.lab-inputs/views/abc"))
+        Files.writeString(corpus.resolve("model.wcnf"), "h 1 0\n")
+        val dir = job(8, "job.log" to "log")
+        Files.createDirectories(dir.resolve("nomad/prepared-source"))
+        Files.createSymbolicLink(dir.resolve("nomad/prepared-corpus"), corpus.toAbsolutePath())
+        Files.createSymbolicLink(dir.resolve("nomad/prepared-source/abc123"), corpus.toAbsolutePath())
+        Files.createSymbolicLink(dir.resolve("relative"), Path.of("job.log"))
+        Files.createSymbolicLink(dir.resolve("hot-log"), dir.resolve("job.log").toAbsolutePath())
+
+        assertEquals(listOf(8L), archiver(listOf(8L to 0L)).pass())
+
+        val archived = paths.jobDir(8)
+        assertEquals(archive.resolve("8"), archived)
+        assertEquals(corpus.toAbsolutePath(), Files.readSymbolicLink(archived.resolve("nomad/prepared-corpus")))
+        assertEquals("h 1 0\n", Files.readString(archived.resolve("nomad/prepared-corpus/model.wcnf")))
+        assertTrue(Files.isSymbolicLink(archived.resolve("nomad/prepared-source/abc123")))
+        assertEquals("log", Files.readString(archived.resolve("relative")))
+        assertFalse(Files.exists(archived.resolve("hot-log"), java.nio.file.LinkOption.NOFOLLOW_LINKS), "it would dangle")
+    }
+
     @Test fun `a running job, one inside its grace or one without a hot directory is left alone`() {
         job(1, "job.log" to "running")
         job(2, "job.log" to "just ended")
