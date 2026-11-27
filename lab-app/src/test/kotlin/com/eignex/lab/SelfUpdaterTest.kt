@@ -123,4 +123,22 @@ class SelfUpdaterTest {
         assertEquals(listOf(false, false, true, true, 2, false), listOf(before, withinInterval, requested, stillDue, fetches, request.exists()))
         assertEquals(1, restarts)
     }
+
+    @Test
+    fun `a checkout without an upstream is not taken for one behind it`() {
+        val calls = mutableListOf<List<String>>()
+        val exec = { _: File, cmd: List<String>, _: File? ->
+            calls += cmd
+            when (cmd.last()) {
+                "HEAD" -> 0 to "aaa"
+                "@{u}" -> 128 to "fatal: no upstream configured for branch 'main'"
+                else -> 0 to ""
+            }
+        }
+        val updater = SelfUpdater(Files.createTempDirectory("src"), 300_000, File.createTempFile("update", ".log"), { 0L }, exec, { restarts++ })
+
+        assertEquals(false, updater.due())
+        updater.maybeUpdate()
+        assertEquals(0, calls.count { it.first() == "bash" })
+    }
 }
