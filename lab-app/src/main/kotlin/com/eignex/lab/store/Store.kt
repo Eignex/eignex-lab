@@ -48,9 +48,10 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     /**
      * Run [block] against one committed snapshot, on the read-only connection: without waiting for a write in this
      * process or another. Store methods that only read use it, so pages and lists never queue behind the runner.
+     * A read inside another joins its snapshot and leaves it in place.
      */
     internal fun <T> reading(block: () -> T): T = db.read { conn ->
-        if (conn === db.writer) block() else {
+        if (conn === db.writer || readConnection.get() != null) block() else {
             readConnection.set(conn)
             try { block() } finally { readConnection.remove() }
         }

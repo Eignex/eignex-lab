@@ -17,8 +17,9 @@ abstract class Repository internal constructor(private val db: Database, protect
     /** The connection this thread's queries use: the snapshot reader inside [reading], else the writer. */
     protected val connection: Connection get() = readConnection.get() ?: db.writer
 
+    /** Run [block] against one committed snapshot ([Database.read]); a read inside another joins its snapshot. */
     protected fun <T> reading(block: () -> T): T = db.read { conn ->
-        if (conn === db.writer) block() else {
+        if (conn === db.writer || readConnection.get() != null) block() else {
             readConnection.set(conn)
             try { block() } finally { readConnection.remove() }
         }
