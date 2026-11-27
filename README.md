@@ -4,6 +4,60 @@ Benchmark runner for Eignex repositories: repository-owned bench adapters and co
 
 [Setup](deploy/SETUP.md) · [Usage](docs/runs.md) · [Bench SDK](lab-bench/README.md)
 
+Agents in consuming repositories use `deploy/lab` and the HTTP API at `https://lab.eignex.com`; see
+[Usage](docs/runs.md) for access, placement and paired-row semantics.
+
+## How the parts fit
+
+One Mac runs the controller and a native worker; Linux Spot instances on AWS (or GCP) add workers on demand.
+
+- **API** (`eignex-lab api`) serves the web UI and the authenticated HTTP API that `deploy/lab` calls, behind Caddy
+  (`deploy/proxy`). State is one SQLite database under `LAB_DATA`.
+- **Runner** (`eignex-lab runner`) is the local maintenance loop: schedules, confirmations, capture analysis,
+  rechecks, retention and self-update from this checkout.
+- **Coordinator** (`eignex-lab nomad-coordinator`) prepares submitted experiments, admits Nomad batch jobs, serves the
+  worker protocol (`/worker/v1`), accepts results and computes desired cloud capacity.
+- **Workers** (`eignex-lab worker`) run in Nomad allocations: natively on the Mac through `raw_exec`, in the worker
+  Docker image on Linux. Each builds the repository, runs its bench adapter's cases in paired rows under a separate
+  **process supervisor** (`eignex-lab process-supervisor`), and uploads checksummed results.
+- **Capacity**: the Mac-side `eignex-lab capacity-adapter` publishes provider inventory and renews signed leases,
+  the Nomad Autoscaler resizes Spot groups, and the `lab-capacity` cloud functions renew or expire them
+  independently of the Mac.
+- **Bench adapters** live in consuming repositories and implement the [Bench SDK](lab-bench/README.md) process
+  contract (`describe`, `plan`, `run`); the lab owns placement, pairing, checking and storage.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `lab-app` | Coordinator, runner, API/web UI, worker and CLI (JVM 25). Packages under `com.eignex.lab`: `cli` entry points, `domain` models and settings, `execution` runner jobs and source/input handling, `nomad` queue, admission and reconciliation, `worker` worker session and preparation, `capacity` capacity policy and provider adapters, `store` SQLite repositories and artifact store, `web` routes and pages (assets in `src/main/resources/web`), `analysis` results, trends and confirmations, `util` I/O and process helpers |
+| `lab-bench` | Published Bench SDK and protocol (JVM 17) |
+| `lab-model` | Portable workload model shared by the app and solvers (JVM 25) |
+| `lab-solvers` | Independent source checkers and reference solvers (JVM 25) |
+| `lab-capacity` | Capacity grants, provider HTTP clients and cloud function handlers (JVM 21) |
+| `xcsp3-tools` | Verified upstream XCSP3 Java tools (JVM 8) |
+| `deploy/` | Host install/update scripts, `deploy/lab` client and `lab.env.example`; `nomad/` runbook, settings examples and worker image; `infra/` OpenTofu provider modules; `proxy/` Caddy; `relay/` CGNAT fallback; `schedules/` committed schedule recipes; `tests/` bash tests |
+| `images/` | Reference solver Docker images (SCIP, clasp, XCSP3 cp-sat) |
+| `checker/`, `bench/` | Bench manifests the lab runs on itself: DIMACS checker controls (`checker/verify-dimacs.sh` in CI) and optimum-claim replay |
+| `docs/` | [Usage](docs/runs.md) and [independent source checking](docs/source-checking.md) |
+
+## Build
+
+Shared dependency versions live in `gradle/libs.versions.toml`; repositories are configured in
+`settings.gradle.kts`. The build uses [KBuild 1.3.8](https://github.com/Eignex/kbuild/releases/tag/v1.3.8) from public
+GitHub Release assets and needs no GitHub token. Gradle provisions JDK 25 for the service. Gradle uses build and
+configuration caching, a 4 GiB heap and at most four workers; CI uses `.github/actions/setup-build` for the same
+Temurin 25 setup. Test results are not cached because tests exercise host processes and external tools.
+
+```sh
+./gradlew check                         # Verify every module
+./gradlew :lab-solvers:test             # Solver unit tests
+./gradlew :lab-app:test                 # Application and integration tests
+./gradlew :lab-app:installDist          # lab-app/build/install/eignex-lab/ (launcher bin/eignex-lab)
+./gradlew :lab-app:distZip              # lab-app/build/distributions/
+./gradlew :lab-capacity:capacityFunctions  # build/capacity-functions/ for OpenTofu
+```
+
 ## Local UI development
 
 ```sh
@@ -27,53 +81,3 @@ Edit files under `lab-app/src/main/resources/web/` and refresh the browser to pi
 The queue's cached display can take up to five seconds to pick up those edits. Restart the command after Kotlin
 changes. Each start creates a fresh directory under `lab-app/build/dev-ui/`; `Ctrl+C`
 stops the preview, and `./gradlew clean` removes its data. Use `./gradlew :lab-app:devUi -PuiPort=8081` to choose another port.
-
-## Lab access
-
-Agents working in consuming repositories use `deploy/lab` and the authenticated HTTP API at
-`https://lab.eignex.com`. Server access and administration belong to agents explicitly working on
-eignex-lab operations; report operational dependencies to that owner.
-
-**Auto placement is preferred and is the default for ordinary jobs.** Omit `tags`: the lab uses
-idle local capacity and adds cloud capacity as demand grows, respecting job priority.
-
-An A/B case row is one workload, seed and repetition with all its configuration arms. The lab runs
-the complete row on the same machine in one worker attempt. Different rows, preparation and
-replacement attempts can use different compatible machines; ordinary A/B jobs need no machine pin.
-
-The build uses [KBuild 1.3.8](https://github.com/Eignex/kbuild/releases/tag/v1.3.8) from public GitHub Release assets,
-including its platform and SDK release-packaging helper. Downloads require no GitHub account or token.
-The service uses JDK 25; the standalone Bench SDK targets Java 17.
-
-## Modules and build
-
-The root project coordinates the build. Each module owns its sources, resources, tests and build output:
-
-| Module | Responsibility | JVM target |
-| --- | --- | --- |
-| `lab-app` | Coordinator, workers, CLI and web application | 25 |
-| `lab-bench` | Published benchmark protocol and SDK | 17 |
-| `lab-model` | Portable workload model shared by the app and solvers | 25 |
-| `lab-solvers` | Independent source checkers and reference solvers | 25 |
-| `lab-capacity` | Capacity grants, provider APIs and cloud function handlers | 21 |
-| `xcsp3-tools` | Verified upstream XCSP3 Java tools | 8 |
-
-Shared dependency versions live in `gradle/libs.versions.toml`; repositories are configured in
-`settings.gradle.kts`. The application depends on the library modules, and solver unit tests run in
-`lab-solvers`; tests involving coordinator services remain in `lab-app`.
-
-Gradle uses the shared Eignex defaults for build and configuration caching, a 4 GiB Gradle heap,
-and at most four workers. Build and Bench SDK release workflows use `.github/actions/setup-build`
-for the same Temurin 25 and encrypted Gradle cache setup. Test results are excluded from the build
-cache because tests exercise host processes and external tools; compilation outputs remain reusable.
-
-```sh
-./gradlew check                         # Verify every module
-./gradlew :lab-solvers:test             # Solver unit tests
-./gradlew :lab-app:test                 # Application and integration tests
-./gradlew :lab-app:installDist          # lab-app/build/install/eignex-lab/
-./gradlew :lab-app:distZip              # lab-app/build/distributions/
-```
-
-The installed launcher remains `bin/eignex-lab`. The Bench SDK's publication coordinates and release layout
-are unchanged. Capacity function packages remain under `build/capacity-functions/` for Terraform.
