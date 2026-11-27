@@ -83,6 +83,18 @@ test_keeps_deployment_provenance_and_referenced_leftovers() {
   check "keeps a referenced leftover" test -f "$root/nomad/lab.env.before-1"
 }
 
+test_a_failed_plan_leaves_no_reference_copies() {
+  setup
+  mkdir -p "$root/releases/old" "$root/nomad" "$root/tmp"
+  printf '{"secret": "private"}' > "$root/nomad/queue.json"
+  for mode in "" --apply; do
+    TMPDIR="$root/tmp" LAB_PRUNE_PROCESSES="" LAB_PRUNE_SERVICES="$root/missing.plist" bash "$script" --data "$root" \
+      ${mode:+"$mode"} > /dev/null 2>&1 && { echo "  failed: planned with an unreadable service" >&2; exit 1; }
+    equal "" "$(ls -A "$root/tmp")" "temporary files after a failed ${mode:-plan}"
+  done
+  check "keeps the release" test -d "$root/releases/old"
+}
+
 failures=0
 tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
 for test in $tests; do

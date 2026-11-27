@@ -78,6 +78,8 @@ references() {
 plan() {
   local refs releases path links="" reasons file kept="{}" unused="[]" leftovers="" pattern
   refs="$(mktemp -d)" || fail "cannot create a temporary directory"
+  # The copies hold private settings text: remove them however the plan ends.
+  trap 'rm -rf "$refs"' EXIT
   references "$refs"
   releases="$data/releases"
   if [[ -d "$releases" ]]; then
@@ -111,6 +113,7 @@ plan() {
     done
   done
   rm -rf "$refs"
+  trap - EXIT
   printf %s "$leftovers" | sort -u | jq -R . | jq -s --arg data "$data" --argjson kept "$kept" --argjson unused "$unused" \
     '{data: $data, keptReleases: $kept, unusedReleases: $unused, unusedDeploymentFiles: .}'
 }
