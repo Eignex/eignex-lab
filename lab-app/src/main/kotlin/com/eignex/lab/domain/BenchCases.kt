@@ -10,7 +10,10 @@ object BenchCases {
     /** The most any case of [plan] asks for, once each case's own request is checked. */
     fun resources(plan: BenchPlan): BenchResources {
         plan.cases.forEach {
-            require(it.resources.cpus in 1..1024 && it.resources.memoryMiB <= Int.MAX_VALUE && it.resources.timeoutSeconds <= 604800)
+            require(it.resources.cpus in 1..1024 && it.resources.memoryMiB <= Int.MAX_VALUE && it.resources.timeoutSeconds <= 604800) {
+                "bench case ${it.id} asks for ${it.resources.cpus} cpus, ${it.resources.memoryMiB} MiB and ${it.resources.timeoutSeconds} s: " +
+                    "cpus must be 1 to 1024 and the timeout at most 604800 s"
+            }
             NodeTags.validate(NodeSelector(require = it.resources.requiredTags))
         }
         require(plan.cases.isNotEmpty()) { "bench selection matched no cases" }
