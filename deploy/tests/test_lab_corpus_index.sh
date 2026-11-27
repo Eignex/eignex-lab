@@ -80,6 +80,22 @@ test_malformed_success_is_a_failure() {
   check "fails" test "$?" -ne 0
 }
 
+test_password_reaches_curl_config_and_an_ended_call_leaves_no_file() {
+  setup
+  mkdir "$root/tmp"
+  # The fake curl keeps its -K config, then ends the shell that called it, as an interrupt would.
+  cat > "$root/bin/curl" << 'EOF'
+#!/usr/bin/env bash
+[[ "$1" == -K ]] && cat "$2" > "$CONFIG"
+kill -TERM "$PPID"
+sleep 1
+EOF
+  PATH="$root/bin:$PATH" TMPDIR="$root/tmp" LAB_PASSWORD=fixture LAB_URL=https://lab.invalid CONFIG="$root/config" \
+    bash "$deploy/lab" health > /dev/null 2>&1
+  equal 'user = ":fixture"' "$(cat "$root/config")" "curl config"
+  equal "" "$(ls -A "$root/tmp")" "files left behind"
+}
+
 failures=0
 tests="${*:-$(declare -F | awk '$3 ~ /^test_/ { print $3 }')}"
 for test in $tests; do

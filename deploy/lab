@@ -101,16 +101,12 @@
 set -euo pipefail
 url="${LAB_URL:-https://lab.eignex.com}"
 # Every call carries the lab's password (HTTP Basic, no user name): LAB_PASSWORD, else the file LAB_PASSWORD_FILE,
-# ~/.config/eignex-lab/password by default. It reaches curl through a private config file, never its command line.
+# ~/.config/eignex-lab/password by default. It reaches curl through a config pipe, never its command line or a file
+# an interrupted call could leave behind.
 password="${LAB_PASSWORD:-$(cat "${LAB_PASSWORD_FILE:-$HOME/.config/eignex-lab/password}" 2>/dev/null || true)}"
 curl() {
   [[ -n "$password" ]] || { echo "no lab password: set LAB_PASSWORD or put it in ~/.config/eignex-lab/password" >&2; exit 2; }
-  local auth status=0
-  auth="$(umask 077; mktemp)"
-  printf 'user = ":%s"\n' "$password" > "$auth"
-  command curl -K "$auth" "$@" || status=$?
-  rm -f "$auth"
-  return "$status"
+  command curl -K <(printf 'user = ":%s"\n' "$password") "$@"
 }
 files_json() {
   local response code transport list_timeout="${LAB_FILE_LIST_TIMEOUT:-600}" deadline remaining wait_sec transport_timeout
