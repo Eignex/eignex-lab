@@ -30,6 +30,18 @@ class MiniZincReferenceTest {
     }
 
     @Test
+    fun `an objective printed without its solution separator should not replace the last complete one`() {
+        // A solver killed while printing leaves a partial solution: its objective names no complete witness.
+        val output = "x = 3;\n_objective = 9;\n----------\nx = 2;\n_objective = 4;\n"
+
+        val r = MiniZincReference.parse(output.lineSequence())
+
+        assertEquals(true, r.feasible)
+        assertEquals("9", r.exactObjective)
+        assertEquals(9.0, r.objective)
+    }
+
+    @Test
     fun `an unsatisfiable model should be a proven infeasibility`() {
         val r = MiniZincReference.parse("=====UNSATISFIABLE=====\n".lineSequence())
 

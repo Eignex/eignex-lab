@@ -99,6 +99,8 @@ object MiniZincReference {
         val raw = StringBuilder()
         val stats = LinkedHashMap<String, String>()
         var exact: ExactObjective? = null
+        // An objective counts only once the solution it belongs to is complete (its separator printed).
+        var pending: ExactObjective? = null
         var timeToBestMs: Long? = null
         var timeToFirstFeasibleMs: Long? = null
         var proven = false
@@ -110,6 +112,8 @@ object MiniZincReference {
             when {
                 line == SOLUTION_SEPARATOR -> {
                     anySolution = true
+                    pending?.let { exact = it }
+                    pending = null
                     val elapsed = (System.nanoTime() - startNanos) / 1_000_000
                     timeToBestMs = elapsed
                     if (timeToFirstFeasibleMs == null) timeToFirstFeasibleMs = elapsed
@@ -123,7 +127,7 @@ object MiniZincReference {
                 line.startsWith(STAT_PREFIX) -> line.removePrefix(STAT_PREFIX).trim().split('=', limit = 2)
                     .takeIf { it.size == 2 }?.let { stats[it[0].trim()] = it[1].trim() }
                 line.startsWith(OBJECTIVE_KEY) || line.startsWith(MODEL_OBJECTIVE_KEY) ->
-                    ExactObjective.parse(line.substringAfter('=').trim().removeSuffix(";").trim())?.let { exact = it }
+                    ExactObjective.parse(line.substringAfter('=').trim().removeSuffix(";").trim())?.let { pending = it }
             }
         }
         return ReferenceResult(
