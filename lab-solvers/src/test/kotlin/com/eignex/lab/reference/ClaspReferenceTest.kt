@@ -113,6 +113,15 @@ class ClaspReferenceTest {
     }
 
     @Test
+    fun `a tab-separated hard clause should get the top weight too`() {
+        val wcnf = "h\t1 2 0\n3\t-1 0\n"
+
+        val out = ClaspReference.ClaspInput.of(Format.WCNF) { wcnf.reader().buffered() }.text()
+
+        assertEquals("p wcnf 2 2 4\n4 1 2 0\n3\t-1 0\n", out)
+    }
+
+    @Test
     fun `a classic wcnf should pass unchanged`() {
         val wcnf = "p wcnf 2 2 9\n9 1 2 0\n3 -1 0\n"
 

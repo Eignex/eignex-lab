@@ -173,7 +173,8 @@ object ClaspReference {
                     val clause = raw.trim()
                     when {
                         clause.isEmpty() || clause.startsWith("c") -> null
-                        clause.startsWith("h ") -> "$top ${clause.removePrefix("h ")}"
+                        // Any whitespace separates `h` from the clause, as it does the clause's other tokens.
+                        clause.length > 1 && clause[0] == 'h' && clause[1].isWhitespace() -> "$top ${clause.substring(1).trimStart()}"
                         else -> clause
                     }
                 }
