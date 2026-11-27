@@ -80,6 +80,24 @@ async function refresh(force = false) {
   try { await refreshPending; }
   finally { refreshPending = null; }
 }
+// Scroll offsets, shown result counts, open disclosures and filter values survive a live part's new markup.
+function replaceKeepingView(part, markup) {
+  const filterFields = '[data-result-list] input[id], [data-result-list] select[id]';
+  const scrolls = Array.from(part.querySelectorAll('.scroll')).map(function (el) { return {left: el.scrollLeft, top: el.scrollTop}; });
+  const limits = new Map(Array.from(part.querySelectorAll('[data-result-list][id]')).map(function (el) { return [el.id, el.dataset.resultShown]; }));
+  const disclosures = new Map(Array.from(part.querySelectorAll('details[id]')).map(function (el) { return [el.id, el.open]; }));
+  const filters = new Map(Array.from(part.querySelectorAll(filterFields)).map(function (el) {
+    return [el.id, {value: el.value, checked: el.checked}];
+  }));
+  part.innerHTML = markup;
+  part.querySelectorAll('[data-result-list][id]').forEach(function (el) { if (limits.get(el.id)) el.dataset.resultShown = limits.get(el.id); });
+  part.querySelectorAll('details[id]').forEach(function (el) { if (disclosures.has(el.id)) el.open = disclosures.get(el.id); });
+  part.querySelectorAll(filterFields).forEach(function (el) {
+    const state = filters.get(el.id);
+    if (state) { el.value = state.value; el.checked = state.checked; }
+  });
+  part.querySelectorAll('.scroll').forEach(function (el, i) { el.scrollLeft = scrolls[i]?.left || 0; el.scrollTop = scrolls[i]?.top || 0; });
+}
 async function updateLiveParts() {
   const controller = new AbortController();
   const timeout = setTimeout(function () { controller.abort(); }, 30000);
@@ -93,22 +111,9 @@ async function updateLiveParts() {
       if (old) {
         const markup = part.innerHTML;
         if (liveMarkup.get(old) === markup) return;
-        const scrolls = Array.from(old.querySelectorAll('.scroll')).map(function (el) { return {left: el.scrollLeft, top: el.scrollTop}; });
-        const limits = new Map(Array.from(old.querySelectorAll('[data-result-list][id]')).map(function (el) { return [el.id, el.dataset.resultShown]; }));
-        const disclosures = new Map(Array.from(old.querySelectorAll('details[id]')).map(function (el) { return [el.id, el.open]; }));
-        const filters = new Map(Array.from(old.querySelectorAll('[data-result-list] input[id], [data-result-list] select[id]')).map(function (el) {
-          return [el.id, {value: el.value, checked: el.checked}];
-        }));
-        old.innerHTML = markup;
-        old.querySelectorAll('[data-result-list][id]').forEach(function (el) { if (limits.get(el.id)) el.dataset.resultShown = limits.get(el.id); });
-        old.querySelectorAll('details[id]').forEach(function (el) { if (disclosures.has(el.id)) el.open = disclosures.get(el.id); });
-        old.querySelectorAll('[data-result-list] input[id], [data-result-list] select[id]').forEach(function (el) {
-          const state = filters.get(el.id);
-          if (state) { el.value = state.value; el.checked = state.checked; }
-        });
+        replaceKeepingView(old, markup);
         liveMarkup.set(old, markup);
         if (part.id === 'history') historyChanged = true;
-        old.querySelectorAll('.scroll').forEach(function (el, i) { el.scrollLeft = scrolls[i]?.left || 0; el.scrollTop = scrolls[i]?.top || 0; });
       }
     });
     if (historyChanged && typeof applyFilter === 'function') applyFilter();
