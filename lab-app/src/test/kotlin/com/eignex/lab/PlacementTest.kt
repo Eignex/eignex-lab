@@ -60,6 +60,17 @@ class PlacementTest {
     }
 
     @Test
+    fun `a mac-tagged sweep and its bench confirmation match only the native mac worker`() {
+        val spec = ExperimentSpec("klause-sweep", bench = BenchSpec("bench.json"), nodeTags = NodeSelector(require = setOf("platform:mac")))
+        val queue = config().nomadQueue!!
+
+        for (name in listOf("klause-sweep@" + "a".repeat(40), Confirm.name("klause-sweep", "a".repeat(40), 1))) {
+            val targets = queue.matching(spec, name)
+            assertTrue(targets.isNotEmpty() && targets.all { it.native }, name)
+        }
+    }
+
+    @Test
     fun `a submitted host is not followed, and a profile job goes local first too`() {
         val config = config()
         val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", classpath = listOf("tools/lib/*")))
