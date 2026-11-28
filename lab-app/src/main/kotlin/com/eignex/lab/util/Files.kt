@@ -1,10 +1,15 @@
 package com.eignex.lab.util
 
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
@@ -20,9 +25,27 @@ internal fun deleteTree(root: Path, ignoreMissing: Boolean = false) {
         Files.deleteIfExists(root)
         return
     }
-    Files.walk(root).use { paths ->
-        paths.sorted(Comparator.reverseOrder()).forEach { if (ignoreMissing) Files.deleteIfExists(it) else Files.delete(it) }
+    if (!ignoreMissing) {
+        Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+        return
     }
+    // The walk itself, not only the deletes, can meet an entry that is gone by the time it is read. Other failures
+    // surface as Files.walk reports them: unchecked below the root.
+    fun failed(path: Path, failure: IOException): FileVisitResult = when {
+        failure is NoSuchFileException -> FileVisitResult.CONTINUE
+        path == root -> throw failure
+        else -> throw java.io.UncheckedIOException(failure)
+    }
+    Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+            Files.deleteIfExists(file); return FileVisitResult.CONTINUE
+        }
+        override fun visitFileFailed(file: Path, failure: IOException): FileVisitResult = failed(file, failure)
+        override fun postVisitDirectory(dir: Path, failure: IOException?): FileVisitResult {
+            if (failure != null) failed(dir, failure)
+            Files.deleteIfExists(dir); return FileVisitResult.CONTINUE
+        }
+    })
 }
 
 /**
