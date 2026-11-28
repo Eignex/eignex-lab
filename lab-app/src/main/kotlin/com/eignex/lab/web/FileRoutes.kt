@@ -86,16 +86,24 @@ private suspend fun requireJobFiles(paths: DataPaths) {
     io { Volumes.jobFiles(paths) }?.let { throw ApiError.Unavailable("job files unavailable: $it") }
 }
 
-/** The last [bytes] of a file that may still be growing. */
-private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").use { raf ->
-    // One length for both ends: a second read could see the file grown past the requested tail, or truncated below start.
-    val length = raf.length()
-    val start = maxOf(0, length - bytes)
-    raf.seek(start)
-    val buffer = ByteArray((length - start).toInt())
-    raf.readFully(buffer)
-    String(buffer)
-}
+/**
+ * The last [bytes] of a file that may still be growing, or be truncated while it is read: then what is left of the tail.
+ * [length] reads the file's length, once, so a file that grows meanwhile gives no more than [bytes].
+ */
+internal fun tail(file: File, bytes: Long, length: (RandomAccessFile) -> Long = RandomAccessFile::length): String =
+    RandomAccessFile(file, "r").use { raf ->
+        val end = length(raf)
+        val start = maxOf(0, end - bytes)
+        raf.seek(start)
+        val buffer = ByteArray((end - start).toInt())
+        var read = 0
+        while (read < buffer.size) {
+            val count = raf.read(buffer, read, buffer.size - read)
+            if (count < 0) break
+            read += count
+        }
+        String(buffer, 0, read)
+    }
 
 private val TEXT_FILES = setOf("", "out", "err", "log", "txt", "sha", "pid")
 
