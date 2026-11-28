@@ -24,6 +24,18 @@ class JobWaitTest {
     private val host = HostReport("Test/Arm64", 4, "java")
     private fun job() = store.create("waiting", "main", listOf("full command retained" to 17L), experiment = ExperimentSpec("waiting"))
 
+    @Test fun `the job list refuses a limit that is not positive`() = testApplication {
+        job(); job()
+        application { api(config, store, host) }
+        for (limit in listOf("0", "-1")) {
+            val response = client.get("/jobs?limit=$limit")
+            assertEquals(HttpStatusCode.BadRequest, response.status, limit)
+            assertContains(response.bodyAsText(), "limit must be a positive number")
+        }
+        assertEquals(1, Json.decodeFromString<List<Job>>(client.get("/jobs?limit=1").bodyAsText()).size)
+        assertEquals(2, Json.decodeFromString<List<Job>>(client.get("/jobs").bodyAsText()).size)
+    }
+
     @Test fun `terminal wait retains the complete existing job response`() = testApplication {
         val id = job()
         store.finish(id, Status.FAILED, "fixture failure")
