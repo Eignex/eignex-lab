@@ -67,6 +67,8 @@ jobs:
           if-no-files-found: ignore
       - name: Verify bench SDK release assets
         run: ./gradlew :lab-bench:verifyRelease
+      - name: Test web UI scripts
+        run: node --test lab-app/src/test/js/benchmark-history.test.cjs
       - name: Validate service installation
         run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh && bash deploy/tests/test_lab_wait.sh
       - name: Verify host maintenance
