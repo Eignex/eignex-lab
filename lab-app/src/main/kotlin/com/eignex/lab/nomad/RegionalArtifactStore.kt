@@ -7,7 +7,6 @@ import com.eignex.lab.store.*
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The coordinator's artifacts, with cloud build archives left in the regional store ([BuildArchives]) and, when
@@ -20,7 +19,8 @@ internal class RegionalArtifactStore(private val local: ArtifactStore, private v
     // Complete result publication belongs to the local CAS, not the regional preparation archive store.
     override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> InputStream) =
         local.putComplete(job, blobs, source)
-    private val fetches = ConcurrentHashMap<Pair<Long, String>, Any>()
+    /** Fetches of one blob into one job serialize; striped, so the locks stay bounded however many blobs are fetched. */
+    private val fetches = Array(FETCH_STRIPES) { Any() }
     private fun held(job: Long, sha: String) = runCatching { local.readFile(job, sha) }.isSuccess
 
     // An unreachable store holds nothing usable just now; readers then fail as they would without it.
@@ -39,7 +39,7 @@ internal class RegionalArtifactStore(private val local: ArtifactStore, private v
     /** Copy regional blob [sha] into [job]'s local artifacts; the local store checks its hash before publishing it. */
     private fun fetch(job: Long, sha: String) {
         if (held(job, sha)) return
-        synchronized(fetches.computeIfAbsent(job to sha) { Any() }) {
+        synchronized(fetches[Math.floorMod((job to sha).hashCode(), FETCH_STRIPES)]) {
             if (held(job, sha)) return
             // Not held anywhere: leave the local read to fail as it always has.
             val (store, size) = builds.size(sha)?.let { builds to it } ?: results?.size(sha)?.let { results to it } ?: return
@@ -53,3 +53,5 @@ internal class RegionalArtifactStore(private val local: ArtifactStore, private v
         }
     }
 }
+
+private const val FETCH_STRIPES = 256
