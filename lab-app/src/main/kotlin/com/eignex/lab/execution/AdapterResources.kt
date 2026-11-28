@@ -81,7 +81,7 @@ internal object AdapterResources {
         if (!requested) return JsonObject(clean).toString()
         val receipt = metadata?.takeIf { it.length <= LIMIT * 2 }?.let { runCatching { json.decodeFromString<Receipt>(it) }.getOrNull() }
         val verified = receipt?.takeIf {
-            it.policy == POLICY && it.scope == SCOPE && receiptSha256?.matches(sha) == true && sha256Hex(metadata!!) == receiptSha256 &&
+            it.policy == POLICY && it.scope == SCOPE && receiptSha256?.matches(sha) == true && sha256Hex(metadata) == receiptSha256 &&
                 it.timerSha256?.matches(sha) == true && command != null && it.commandSha256 == sha256Hex(command) &&
                 raw != null && rawSha256?.matches(sha) == true && sha256Hex(raw) == rawSha256 && it.rawSha256 == rawSha256 &&
                 runCatching { values(raw) == it.resources }.getOrDefault(false) &&

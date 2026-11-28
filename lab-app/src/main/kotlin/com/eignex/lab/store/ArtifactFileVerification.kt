@@ -46,7 +46,7 @@ internal class ArtifactFileVerification(
                     future = flights[key]
                     if (future == null) {
                         future = CompletableFuture<TreeVerification.FileMetadata?>()
-                        flights[key] = future!!; leader = true
+                        flights[key] = future; leader = true
                     }
                 }
                 if (!leader) slots.release()

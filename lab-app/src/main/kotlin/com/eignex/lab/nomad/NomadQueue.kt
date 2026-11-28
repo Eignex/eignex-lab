@@ -305,7 +305,7 @@ class NomadQueue(
 
     /** Whether another active job's cloud preparation, which reports its builds, is building one of [keys] for [target]'s platform. */
     private fun buildInFlight(job: Job, active: List<Job>, keys: Set<String>, target: NomadQueueTarget): Boolean =
-        active.asSequence().filter { it.id != job.id && !it.setupDone && it.experiment?.repository == job.experiment?.repository }.take(32).any { other ->
+        active.asSequence().filter { it.id != job.id && !it.setupDone && it.experiment.repository == job.experiment.repository }.take(32).any { other ->
             store.execution.sessions(other.id).any { session ->
                 if (session.executionClass != ExecutionClass.PREPARE || session.desired != Desired.RUN) return@any false
                 val placement = store.execution.placement(session.id)
@@ -518,7 +518,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             val sourceBuild = if (!includeHistory && settings.packedSourceSnapshots) build.copy(gitBundle = PackedGitSource.MARKER) else build
             val reused = sourceCache.reuse(job.id, spec.repository, sha, first.os, first.arch, "jdk25", sourceBuild,
                 authorize = { require(sha in approved); trust.requireRepository() }, includeHistory = includeHistory) {
-                store.active(withCommands = false).asSequence().filter { it.id != job.id && it.experiment?.repository == spec.repository }.take(32).flatMap { other ->
+                store.active(withCommands = false).asSequence().filter { it.id != job.id && it.experiment.repository == spec.repository }.take(32).flatMap { other ->
                     store.execution.sessions(other.id).asSequence().filter { it.executionClass == ExecutionClass.PREPARE }.mapNotNull { session ->
                         runCatching { other.id to store.execution.manifest(session.id) }.getOrNull()
                     }.flatMap { (owner, manifest) -> manifest.bundles.asSequence().map { owner to it } }
