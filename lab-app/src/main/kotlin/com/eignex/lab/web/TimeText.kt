@@ -31,7 +31,8 @@ internal fun clockTime(millis: Long): Html = buildHtml {
 /** How long ago, for the last day, then the date; the exact time is in the tooltip. */
 internal fun ago(millis: Long?): Html {
     if (millis == null) return buildHtml {}
-    val seconds = (now() - millis) / 1000
+    // A time recorded by a clock slightly ahead of this one reads as just now, never as a negative age.
+    val seconds = (now() - millis).coerceAtLeast(0) / 1000
     val text =
         if (seconds < 86_400) "${span(seconds)} ago" else clock.format(Instant.ofEpochMilli(millis))
     return buildHtml {
