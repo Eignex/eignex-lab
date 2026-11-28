@@ -20,7 +20,6 @@ import kotlinx.serialization.json.putJsonObject
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.time.Clock
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -171,7 +170,7 @@ internal class S3Presigner(private val bucket: String, private val region: Strin
         val path = "/" + encode(key, slash = true)
         val canonicalRequest = listOf(method, path, canonicalQuery, signed.entries.joinToString("") { (name, value) -> "$name:$value\n" },
             signedHeaders, "UNSIGNED-PAYLOAD").joinToString("\n")
-        val stringToSign = listOf(ALGORITHM, timestamp, scope, sha256(canonicalRequest)).joinToString("\n")
+        val stringToSign = listOf(ALGORITHM, timestamp, scope, sha256Hex(canonicalRequest)).joinToString("\n")
         val key = listOf(timestamp.take(8), region, "s3", "aws4_request")
             .fold("AWS4${signing.secretAccessKey}".toByteArray()) { secret, part -> hmac(secret, part) }
         return "https://$host$path?$canonicalQuery&X-Amz-Signature=${hmac(key, stringToSign).hex()}"
@@ -193,7 +192,6 @@ internal class S3Presigner(private val bucket: String, private val region: Strin
             }
         }
 
-        private fun sha256(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).hex()
         private fun hmac(key: ByteArray, text: String): ByteArray =
             Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }.doFinal(text.toByteArray())
     }
