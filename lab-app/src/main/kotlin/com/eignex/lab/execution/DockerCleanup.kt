@@ -170,7 +170,6 @@ class DockerCleanup(
         const val BUILD_CACHE_AGE = "168h"
         const val IMAGE_FORMAT = "{{.Repository}}\t{{.Tag}}\t{{.ID}}"
         const val DEFAULT_KEEP = Defaults.DOCKER_KEEP
-        private const val KIB = 1024L
 
         /** The last cleanup written to [stateFile]; null before the first or when it cannot be read. */
         fun last(stateFile: Path): DockerCleanupRun? = runCatching {
