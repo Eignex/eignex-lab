@@ -122,8 +122,12 @@ class VolumeAccess(
         val probe = begin(label, key)
         val left = timeoutMs - (now() - probe.started)
         if (left > 0) probe.done.await(left, TimeUnit.MILLISECONDS)
-        if (probe.done.count == 0L) return probe.problem
-        return blocked(label, key).also { outcomes[key] = Outcome(now(), it) }
+        // Under the probe's lock, which it records its outcome under: a probe that ended just after the wait timed out
+        // keeps the outcome it found instead of having it overwritten as blocked.
+        synchronized(probe) {
+            if (probe.done.count == 0L) return probe.problem
+            return blocked(label, key).also { outcomes[key] = Outcome(now(), it) }
+        }
     }
 
     /** Start probing [label]'s directory [dir], unless its last outcome is recent or a probe of it is in flight. */
@@ -144,10 +148,12 @@ class VolumeAccess(
                 } catch (e: Throwable) {
                     described(label, key, e)
                 }
-                probe.problem = problem
-                outcomes[key] = Outcome(now(), problem)
-                synchronized(inFlight) { inFlight.remove(key, probe) }
-                probe.done.countDown()
+                synchronized(probe) {
+                    probe.problem = problem
+                    outcomes[key] = Outcome(now(), problem)
+                    synchronized(inFlight) { inFlight.remove(key, probe) }
+                    probe.done.countDown()
+                }
             }
         }
     }
