@@ -33,7 +33,7 @@ internal fun Route.jobRoutes(services: ApiServices) {
         // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds. ?active=true lists
         // every queued and running job, oldest first, however old, instead of the newest.
         val commands = call.parameters["commands"] == "true"
-        val limit = call.parameters["limit"]?.let { it.toIntOrNull() ?: throw ApiError.Invalid("limit must be a number") } ?: PAGE_SIZE
+        val limit = call.parameters["limit"]?.let { it.toIntOrNull()?.takeIf { n -> n > 0 } ?: throw ApiError.Invalid("limit must be a positive number") } ?: PAGE_SIZE
         val before = call.parameters["before"]?.let { it.toLongOrNull() ?: throw ApiError.Invalid("before must be a number") }
         call.respond(io {
             if (call.parameters["active"] == "true") store.active(withCommands = commands)
