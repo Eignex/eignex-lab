@@ -29,7 +29,14 @@ class Xcsp3Checker(
     override fun check(case: CheckCase, work: File): Verdict {
         val instantiation = case.witness.removePrefix("v ").trim()
         val cost = if (case.optimize) {
-            case.claimedObjective ?: return Verdict(LabCheck.UNKNOWN, "the record holds no claimed objective to check", VERSION, jarSha)
+            val claimed = case.claimedObjective
+                ?: return Verdict(LabCheck.UNKNOWN, "the record holds no claimed objective to check", VERSION, jarSha)
+            // XCSP3 costs are integers; anything else is never spliced into the instantiation's XML.
+            if (!INTEGER.matches(claimed)) {
+                return Verdict(LabCheck.UNKNOWN, "the claimed objective ${claimed.take(40)} is not an integer the XCSP3 checker can compare",
+                    VERSION, jarSha)
+            }
+            claimed
         } else null
         val witness = File(work, "witness.xml").apply { writeText(withCost(instantiation, cost)) }
         val run = CorpusFiles.withPlainFile(case.sources.model) { instance ->
@@ -58,6 +65,7 @@ class Xcsp3Checker(
                 ?.takeIf { it.isFile }?.let(::sha256)
         }
 
+        private val INTEGER = Regex("-?[0-9]+")
         private val COST = Regex("""\s+cost\s*=\s*("[^"]*"|'[^']*')""")
 
         /** [instantiation] with its `cost` attribute set to [cost], or without one when null. */
