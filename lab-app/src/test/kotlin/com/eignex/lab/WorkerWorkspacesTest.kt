@@ -28,6 +28,23 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 
 class WorkerWorkspacesTest {
+    @Test fun `the portable private copy keeps symbolic links as links`() {
+        val base = Files.createTempDirectory("portable-copy")
+        try {
+            val source = Files.createDirectories(base.resolve("source"))
+            Files.createDirectories(source.resolve("lib")); Files.writeString(source.resolve("lib/file"), "bytes")
+            Files.createSymbolicLink(source.resolve("lib-link"), Path.of("lib"))
+            Files.createSymbolicLink(source.resolve("file-link"), Path.of("lib/file"))
+            val destination = base.resolve("copy")
+
+            copyTreePortably(source, destination) {}
+
+            assertEquals(Path.of("lib"), Files.readSymbolicLink(destination.resolve("lib-link")))
+            assertEquals(Path.of("lib/file"), Files.readSymbolicLink(destination.resolve("file-link")))
+            assertEquals("bytes", Files.readString(destination.resolve("lib/file")))
+        } finally { deleteTree(base) }
+    }
+
     @Test fun `distinct workspace keys with the same old stripe can enter copy callbacks concurrently`() {
         val root = Files.createTempDirectory("workspace-lock-collision")
         val queued = ConcurrentLinkedQueue<Runnable>(); val cache = WorkerWorkspaces(root, Executor { queued.add(it) })
