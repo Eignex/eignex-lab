@@ -195,7 +195,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                         if (!valid(blob, file)) {
                             val staging = Files.createTempFile(blob.parent, ".${file.sha256}-input-", ".partial")
                             try {
-                                fetch(input, staging)
+                                fetch(input, staging, checkActive)
                                 check(valid(staging, file)) { "shared input checksum mismatch" }
                                 checkActive()
                                 Files.move(staging, blob, ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
@@ -225,13 +225,13 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
         }
     }.getOrDefault(false)
 
-    private fun fetch(input: SharedInput, destination: Path) {
+    private fun fetch(input: SharedInput, destination: Path, checkActive: () -> Unit) {
         val packed = Files.createTempFile(destination.parent, ".${input.file.sha256}-transfer-", ".partial")
         try {
             val local = root.resolve(safeRelative(input.file.path + ".zst"))
             val source = if (input.encoding == "zstd" && local.toRealPathOrNull()?.startsWith(root.toRealPath()) == true &&
                 valid(local, input.file.copy(sha256 = input.storedSha256, bytes = input.storedBytes))) local else {
-                transport.get(input.key, packed)
+                requests.run("download", checkActive) { transport.get(input.key, packed) }
                 packed
             }
             check(Files.size(source) == input.storedBytes && hashFile(source) == input.storedSha256) { "stored input checksum mismatch" }
@@ -327,7 +327,10 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         check(response.statusCode() in setOf(200, 201, 204, 412)) { "shared input publication unavailable (${response.statusCode()})" }
     }
     override fun get(key: String, destination: Path) {
-        val response = client.send(request("GET", key).GET().build(), HttpResponse.BodyHandlers.ofFile(destination))
+        // Transient statuses surface as IOException for the caller's retry; each try writes [destination] afresh, so a
+        // retry never leaves an earlier try's partial or error body ahead of or behind the bytes.
+        val response = send("download", request("GET", key).GET().build(), HttpResponse.BodyHandlers.ofFile(destination,
+            java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING))
         check(response.statusCode() == 200) { "shared input download unavailable (${response.statusCode()})" }
     }
 }
