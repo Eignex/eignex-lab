@@ -69,6 +69,20 @@ class JobFilesTest {
     }
 
     @Test
+    fun `a tail read while the file changes returns what it can`() {
+        val file = Files.createTempFile("tail", ".log").toFile()
+        fun reset() = file.writeText("0123456789")
+        reset()
+        // Truncated after its length was read: what is left of the tail, or nothing, instead of a failure.
+        assertEquals("23", tail(file, 8) { raf -> raf.length().also { file.writeText("0123") } })
+        reset()
+        assertEquals("", tail(file, 6) { raf -> raf.length().also { file.writeText("0123") } })
+        reset()
+        // Grown meanwhile: still only the bytes asked for.
+        assertEquals("6789", tail(file, 4) { raf -> raf.length().also { file.appendText("abc") } })
+    }
+
+    @Test
     fun `a job's own files are served whole and as tails`() = withLab { lab ->
         val log = client.get("/jobs/${lab.id}/files/job.log")
         val record = client.get("/jobs/${lab.id}/files/cases/0/record.json")
