@@ -27,7 +27,7 @@ internal fun <T> withOwnedCopyProcess(process: Process, copy: () -> T): T {
         }
         if (Thread.interrupted()) interruption(InterruptedException("private copy cleanup interrupted"))
         interrupted?.let { error ->
-            if (cleanupFailure == null) cleanupFailure = error else cleanupFailure!!.addSuppressed(error)
+            if (cleanupFailure == null) cleanupFailure = error else cleanupFailure.addSuppressed(error)
         }
         cleanupFailure?.let { error ->
             if (failure == null) throw error else failure.addSuppressed(error)

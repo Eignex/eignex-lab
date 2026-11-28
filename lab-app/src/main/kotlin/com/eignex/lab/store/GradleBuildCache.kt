@@ -80,7 +80,7 @@ class GradleBuildCache(private val root: Path, private val maxBytes: Long, priva
         return used
     }
 
-    private fun evict() = synchronized(evicting) {
+    private fun evict(): Unit = synchronized(evicting) {
         if (used.get() <= maxBytes) return
         val target = maxBytes - maxBytes / 10
         for ((path, bytes) in entries().sortedBy { runCatching { Files.getLastModifiedTime(it.first).toMillis() }.getOrDefault(0L) }) {
@@ -112,7 +112,7 @@ class GradleBuildCache(private val root: Path, private val maxBytes: Long, priva
         private fun complete(path: Path): Boolean = try {
             GZIPInputStream(Files.newInputStream(path), 64 * 1024).use { input ->
                 val buffer = ByteArray(64 * 1024)
-                while (input.read(buffer) >= 0) Unit
+                while (input.read(buffer) >= 0) continue
             }
             true
         } catch (_: IOException) { false }

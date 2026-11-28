@@ -275,7 +275,7 @@ class ExecutionStore internal constructor(private val store: Store) {
             // back. A named claim takes the next row alone, once the free slots hold all its arms or nothing else runs;
             // an unnamed one takes rows until they fill the slots. One row keeps its own key. With simultaneous arms
             // every claimed arm starts at once: no row is taken unless the free slots hold all of it.
-            val simultaneous = store.job(session.jobId)!!.experiment?.simultaneousArms == true
+            val simultaneous = store.job(session.jobId)!!.experiment.simultaneousArms == true
             val rows = mutableListOf(rowsFree.first())
             if ((simultaneous || claimId != null && running.isNotEmpty()) && rows.single().value.size > slots) return@executionTransaction null
             if (claimId == null) for (row in rowsFree.drop(1)) {
