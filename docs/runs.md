@@ -621,18 +621,18 @@ Schedules are listed by priority, highest first, with creation order breaking ti
 `deploy/lab rename-schedule <id> <name>`. Its ID, last revision, check cadence and all scheduled run and confirmation
 history are retained; the renamed series continues comparing with its existing baseline.
 
-### Klause sweep resource policy
+### Klause sweep placement
 
-The committed recipe in `deploy/schedules/klause-sweep.json` runs the repository's sweep through
-`klause-bench/lab/bench-linux.json`. It requires Linux and requests `vcpus=1`, so each solve worker runs one case
-under an enforced cgroup CPU and memory budget. Preparation has its own grant. Placement remains automatic;
-different rows can use different compatible nodes, while every confirmation row keeps both revisions together
-in one worker attempt. Adapter resource observations supplement the accepted worker receipts.
+The committed recipe in `deploy/schedules/klause-sweep.json` runs the repository's sweep on the Mac, and its
+confirmations follow: a confirmation copies its run's node tags, and `platform:mac` matches only the native Mac
+worker, so no run or confirmation of this schedule goes to a cloud node. It uses `klause-bench/lab/bench.json`,
+which declares no platform, and requests `vcpus=1`, so the Mac runs one case at a time. The Mac's CPU limits are
+advisory (`advisory-native` frames), so adapter resources, which need Linux, stay off.
 
-The recipe uses the `klause-sweep-linux-cpu1-v1` comparison series with a 10-second solver limit, source validation
-and the repository-owned sweep selection. Earlier Mac history remains available, but its wall times are not a
-solver-only baseline for this series. A cgroup quota is a limit, not a dedicated physical core or a promise of
-noise-free timings; paired confirmations still decide regression attribution.
+The recipe writes the `klause-sweep-mac-cpu1-v1` comparison series. Keep the 10-second solver limit, seed,
+source validation and repository-owned sweep selection. The `klause-sweep-linux-cpu1-v1` history remains
+available, but its wall times are not a baseline for the Mac; paired confirmations still decide regression
+attribution.
 
 Apply a changed recipe to the existing schedule, preserving its ID and history:
 
@@ -640,6 +640,4 @@ Apply a changed recipe to the existing schedule, preserving its ID and history:
 deploy/lab reschedule 2 deploy/schedules/klause-sweep.json
 ```
 
-Validate a changed recipe first with a bounded copy at an exact revision: its `labExecution.frame` must show
-`enforcement=cgroup-v2-hard`, a finite `cpuMax` matching the one-CPU grant, a finite `memoryMax` and worker
-parallelism of one, and its paired confirmation receipts must put all arms of each row on the same worker attempt.
+After applying it, check that the next run and its confirmation report the Mac as their host in `lab cases`.
