@@ -123,7 +123,8 @@ internal class NomadReconciler(
         val current = store.job(job.id)!!
         if (current.status.isTerminal) return
         if (current.planned && current.commands.all { it.status in setOf(Status.DONE, Status.FAILED) } &&
-            current.commands.all { it.index in store.execution.checksComplete(job.id) }) {
+            // Read once, after the checks above added to it, not once per command.
+            store.execution.checksComplete(job.id).let { done -> current.commands.all { it.index in done } }) {
             // finishIfComplete rechecks cancellation and projections under the store's write lock.
             if (store.execution.finishIfComplete(job.id)) {
                 for (s in store.execution.sessions(job.id).filter { it.desired != Desired.STOP }) store.execution.loseSession(s.id, "completed")
