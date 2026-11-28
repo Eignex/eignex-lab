@@ -354,8 +354,7 @@ class CapacityCollector(
         val key = Files.readString(tokenFile).trim()
         require(key.toByteArray(Charsets.UTF_8).size >= 32) { "capacity key too short" }
         // The cloud functions verify it with the same code (lab-capacity's CapacityGrants).
-        return CapacityGrant(java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(payload),
-            com.eignex.lab.cloud.CapacityGrants.signature(payload, key))
+        return Json.decodeFromJsonElement<CapacityGrant>(com.eignex.lab.cloud.CapacityGrants.sign(payload, key))
     }
     fun metrics(): String = snapshot().let { sample -> settings.pools.joinToString("\n", postfix = "\n") { p ->
         "${CapacityWire.DESIRED_METRIC}{pool=\"${p.id}\"} ${sample.decision.desired.getValue(p.id)}\nlab_capacity_sample_timestamp_seconds{pool=\"${p.id}\"} ${sample.generatedAt / 1000.0}"

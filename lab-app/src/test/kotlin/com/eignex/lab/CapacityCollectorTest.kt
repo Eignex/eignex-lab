@@ -50,6 +50,17 @@ class CapacityCollectorTest {
         assertTrue(collector.snapshot().decision.desired.values.all { it == 0 }, "expired requests cannot retain paid capacity")
     }
 
+    @Test fun `a grant is lab-capacity's signed grant of its payload and verifies there`() {
+        sample(emptyList()); val c = collector(); c.collect()
+        val grant = c.grant(pool.id)
+        val raw = java.util.Base64.getUrlDecoder().decode(grant.payload)
+        // The form the collector built by hand before: unpadded URL-safe base64 and the domain-separated HMAC.
+        assertEquals(java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw), grant.payload)
+        assertEquals(com.eignex.lab.cloud.CapacityGrants.signature(raw, token), grant.signature)
+        assertEquals(com.eignex.lab.cloud.CapacityGrants.sign(raw, token).toString(), Json.encodeToString(grant))
+        com.eignex.lab.cloud.CapacityGrants.verify(Json.encodeToJsonElement(grant), token, pool.id, pool.maxNodes, at)
+    }
+
     private val root = Files.createTempDirectory("capacity-collector")
     private val store = Store(root.resolve("lab.db"))
     private val token = "capacity-secret-".repeat(4)
