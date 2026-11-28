@@ -166,6 +166,17 @@ class Xcsp3CheckerTest {
     }
 
     @Test
+    fun `a claimed objective that is not an integer is undecided before any XML is built`() {
+        val model = source("Circuit-4", circuit)
+        val claimed = JsonObject(record("1 2 3 0", "1", model) + ("exactObjective" to JsonPrimitive("1\" injected=\"2")))
+
+        val check = assertNotNull(checker().check(problem, claimed))
+
+        assertEquals(LabCheck.UNKNOWN, check.state)
+        assertContains(check.reason, "not an integer")
+    }
+
+    @Test
     fun `the claimed cost replaces any the witness carries`() {
         assertEquals("<instantiation cost=\"7\"> <list> x </list> </instantiation>",
             Xcsp3Checker.withCost("<instantiation cost='3'> <list> x </list> </instantiation>", "7"))
