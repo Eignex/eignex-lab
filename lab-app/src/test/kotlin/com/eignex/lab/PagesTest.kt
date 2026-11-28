@@ -36,6 +36,13 @@ class PagesTest {
     private val host = HostReport("Test/Arm64", 4, "java")
 
     @Test
+    fun `a time a skewed clock puts in the future reads as just now`() {
+        val text = ago(now() + 60_000).markup
+        assertContains(text, ">0s ago<")
+        assertFalse("-" in text.substringAfter(">"), text)
+    }
+
+    @Test
     fun `requested source validation explains unavailable checkers without failing native results`() {
         val root = Files.createTempDirectory("optional-checker-message")
         try {
