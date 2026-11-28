@@ -165,8 +165,12 @@ object Stats {
             sum / divisor
         }
         drawn.sort()
-        return Estimate(data.sum() / divisor, drawn[(drawn.size * LOW).toInt()], drawn[((drawn.size - 1) * HIGH).toInt()])
+        return Estimate(data.sum() / divisor, quantile(drawn, LOW), quantile(drawn, HIGH))
     }
+
+    /** The [q] quantile of ascending [sorted]: the value at rank (n - 1) q, rounded half to even, the same rule at both ends
+     *  of an interval so each leaves out as many draws as the other. */
+    internal fun quantile(sorted: DoubleArray, q: Double): Double = sorted[Math.rint((sorted.size - 1) * q).toInt()]
 
     /** [count] indices drawn with replacement, [resamples] times, shared by all statistics of an arm. */
     private fun resample(count: Int, random: Random, resamples: Int): Array<IntArray> =
