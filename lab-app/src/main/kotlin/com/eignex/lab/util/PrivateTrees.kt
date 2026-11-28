@@ -1,6 +1,7 @@
 package com.eignex.lab.util
 
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.COPY_ATTRIBUTES
 import java.util.concurrent.TimeUnit
@@ -24,9 +25,15 @@ internal fun copyPrivateTree(source: Path, destination: Path, checkActive: () ->
     if (copied) return
     // Cross-volume copies and filesystems without clone support retain the portable path.
     deleteTree(destination)
+    copyTreePortably(source, destination, checkActive)
+}
+
+/** Copy [source] to [destination] file by file, keeping symbolic links as links, as `cp -R` and a clone do. */
+internal fun copyTreePortably(source: Path, destination: Path, checkActive: () -> Unit) {
     Files.walk(source).use { paths -> paths.forEach { file ->
         checkActive()
         val target = destination.resolve(source.relativize(file))
-        if (Files.isDirectory(file)) Files.createDirectories(target) else Files.copy(file, target, COPY_ATTRIBUTES)
+        if (Files.isDirectory(file, NOFOLLOW_LINKS)) Files.createDirectories(target)
+        else Files.copy(file, target, COPY_ATTRIBUTES, NOFOLLOW_LINKS)
     } }
 }
