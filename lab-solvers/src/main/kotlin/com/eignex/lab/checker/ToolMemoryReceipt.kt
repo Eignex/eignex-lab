@@ -112,7 +112,7 @@ class DarwinToolMemory(directory: File, private val limitBytes: Long) {
         }
         samples++
         peak = maxOf(peak ?: 0, bytes)
-        exceeded = bytes > limitBytes
+        exceeded = exceeded || bytes > limitBytes
         return !exceeded
     }
 
