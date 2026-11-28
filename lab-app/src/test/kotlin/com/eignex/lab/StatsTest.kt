@@ -25,6 +25,18 @@ class StatsTest {
     }
 
     @Test
+    fun `both ends of a bootstrap interval take their percentile by one rule`() {
+        val ten = DoubleArray(10) { it.toDouble() }
+        // (n - 1) q rounded: ranks 0 and 9 of ten, as far from the low end as from the high one.
+        assertEquals(0.0, Stats.quantile(ten, 0.025))
+        assertEquals(9.0, Stats.quantile(ten, 0.975))
+        val thousand = DoubleArray(1000) { it.toDouble() }
+        assertEquals(25.0, Stats.quantile(thousand, 0.025))
+        assertEquals(974.0, Stats.quantile(thousand, 0.975))
+        assertEquals(4.5, Stats.quantile(doubleArrayOf(4.5), 0.975))
+    }
+
+    @Test
     fun `ten positive differences give the textbook signed-rank p`() {
         val p = Stats.wilcoxon((1..10).map { it.toDouble() })
 
