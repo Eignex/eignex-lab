@@ -77,6 +77,24 @@ class ToolMemoryReceiptTest {
     }
 
     @Test
+    fun `a sample excess should stay recorded after a later sample within the limit`() {
+        val work = Files.createTempDirectory("tool-memory").toFile()
+        try {
+            val memory = DarwinToolMemory(work, 4_096)
+            memory.timingFile.writeText("512 maximum resident set size\n")
+
+            assertFalse(memory.recordSample("1 8\n", setOf(1L), { setOf(1L) }))
+            assertFalse(memory.recordSample("1 1\n", setOf(1L), { setOf(1L) }), "an earlier excess is never cleared")
+
+            val receipt = memory.finish()
+            assertTrue(receipt.exceeded)
+            assertFalse(receipt.qualified())
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `sample or kernel memory excess should reject the envelope`() {
         val work = Files.createTempDirectory("tool-memory").toFile()
         try {
