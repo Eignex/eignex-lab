@@ -174,7 +174,9 @@ internal class IterationExecutor(
                 } finally { trees.put(worktree); cpu.release(permits) }
             } }).map { future ->
                 try { future.get() } catch (error: java.util.concurrent.ExecutionException) {
-                    if (error.cause is RunDeadlineExceeded) throw error.cause!!
+                    // The session handles these by type; other failures stay wrapped as before.
+                    val cause = error.cause
+                    if (cause is RunDeadlineExceeded || cause is ExecutionFenced || cause is LeaseLost) throw cause
                     throw error
                 }
             }

@@ -713,6 +713,11 @@ class PortableWorkerTest {
         assertFailsWith<IllegalArgumentException> {
             executor.run(manifest, listOf(0, 1, 2), root.resolve("partial-run"), "fixture", 1, remainingLeaseMs = { 80000 })
         }
+        // A fenced or lost case surfaces as itself, not wrapped by the case thread, so the session classifies it.
+        assertFailsWith<ExecutionFenced> {
+            executor.run(manifest, listOf(0, 1), root.resolve("fenced-run"), "fixture", 1, starting = { throw ExecutionFenced("fenced") },
+                remainingLeaseMs = { 80000 })
+        }
     }
 
     @Test fun `committed benchmark Java and tool prerequisites fail before invoking the adapter`(): Unit = service { socket ->
