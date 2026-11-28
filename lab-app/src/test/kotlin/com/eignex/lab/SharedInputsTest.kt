@@ -117,6 +117,23 @@ class SharedInputsTest {
         assertEquals(emptyList(), transport.puts)
     }
 
+    @Test fun `a transient download failure is retried before the input is given up`() {
+        val root = Files.createTempDirectory("retried-input")
+        val sha = ExecutionStore.digest("model"); val key = "input-blobs/$sha"
+        var gets = 0
+        val transport = object : InputTransport by Transport() {
+            override fun get(key: String, destination: Path) {
+                gets++
+                if (gets == 1) { Files.writeString(destination, "partial"); throw java.io.IOException("shared input download HTTP 503") }
+                Files.writeString(destination, "model")
+            }
+        }
+        SharedInputs(root, transport, requests = InputRequestRetry(sleep = {})).acquire(listOf(SharedInput(InputFile("model", sha, 5), key))).use { lease ->
+            assertEquals("model", Files.readString(lease.directory.resolve("model")))
+        }
+        assertEquals(2, gets)
+    }
+
     private class Transport : InputTransport {
         val objects = mutableMapOf<String, ByteArray>()
         val gets = mutableListOf<String>()
