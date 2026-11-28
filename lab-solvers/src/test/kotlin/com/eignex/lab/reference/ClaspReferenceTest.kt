@@ -86,6 +86,22 @@ class ClaspReferenceTest {
     }
 
     @Test
+    fun `opb comments should not count toward the synthesized problem line`() {
+        val opb = "* generated from x99 with 7 rules;\nmin: 1 x1 ;\n+1 x1 +1 x2 >= 1 ;\n"
+        val out = ClaspReference.ClaspInput.of(Format.OPB) { opb.reader().buffered() }.text()
+        assertEquals("* #variable= 2 #constraint= 1", out.lineSequence().first())
+    }
+
+    @Test
+    fun `an opb variable index beyond clasp's range should fail with a clear reason`() {
+        val opb = "+1 x99999999999 >= 1 ;\n"
+        val failure = kotlin.test.assertFailsWith<IllegalArgumentException> {
+            ClaspReference.ClaspInput.of(Format.OPB) { opb.reader().buffered() }
+        }
+        kotlin.test.assertContains(failure.message.orEmpty(), "x99999999999")
+    }
+
+    @Test
     fun `opb with an existing problem line should be unchanged`() {
         val opb = "* #variable= 2 #constraint= 1\nmin: 1 x1 +1 x2 ;\n+1 x1 +1 x2 >= 1 ;\n"
         assertEquals(opb, ClaspReference.ClaspInput.of(Format.OPB) { opb.reader().buffered() }.text())

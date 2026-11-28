@@ -134,9 +134,16 @@ object ClaspReference {
                 var nCon = 0
                 for (line in lines) {
                     if (PROBLEM_LINE.containsMatchIn(line)) return@useLines null
-                    VARIABLE.findAll(line).forEach { nVar = maxOf(nVar, it.groupValues[1].toInt()) }
                     val t = line.trim()
-                    if (t.endsWith(";") && !t.startsWith("*") && !t.startsWith("min:") && !t.startsWith("max:")) nCon++
+                    // A comment names no variable and holds no constraint, whatever its text says.
+                    if (t.startsWith("*")) continue
+                    VARIABLE.findAll(line).forEach {
+                        val index = requireNotNull(it.groupValues[1].toIntOrNull()) {
+                            "OPB variable ${it.value.take(32)} exceeds the variable indices clasp reads"
+                        }
+                        nVar = maxOf(nVar, index)
+                    }
+                    if (t.endsWith(";") && !t.startsWith("min:") && !t.startsWith("max:")) nCon++
                 }
                 "* #variable= $nVar #constraint= $nCon"
             }
